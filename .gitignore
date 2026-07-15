@@ -1,0 +1,35 @@
+# --- Secrets & environment -------------------------------------------
+# Real credentials live only in .env locally, never in git.
+# .env.example (tracked) shows what variables are needed, with no values.
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+secrets.json
+credentials.json
+
+# --- Dependencies (only relevant once/if we add a backend for the
+#     Narrative Engine in Days 12-13 — harmless to have now) ------------
+node_modules/
+package-lock.json
+
+# --- OS cruft ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Editor ------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# --- Logs ------------------------------------------------------------
+*.log
+npm-debug.log*
+
+# --- Future build artifacts (none yet — this is a no-build project) ------
+dist/
+build/

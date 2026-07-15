@@ -1,0 +1,106 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  font-family: 'Courier New', monospace;
+}
+
+canvas {
+  display: block;
+}
+
+/* Crosshair — a single quiet dot, not a game-y reticle */
+#crosshair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 14px;
+  pointer-events: none;
+  z-index: 10;
+  user-select: none;
+}
+
+#crosshair.hidden {
+  display: none;
+}
+
+/* Debug overlay — live telemetry readout while developing */
+#debug-overlay {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 15;
+  background: rgba(0, 0, 0, 0.55);
+  color: #cfead4;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 10px 14px;
+  border-radius: 4px;
+  pointer-events: none;
+  user-select: none;
+}
+
+#debug-overlay.hidden {
+  display: none;
+}
+
+/* Start overlay */
+#start-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, #1a1a1a 0%, #000 100%);
+  z-index: 20;
+  cursor: pointer;
+  transition: opacity 0.6s ease;
+}
+
+#start-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.start-box {
+  text-align: center;
+  color: #d8d0c0;
+}
+
+.start-box h1 {
+  font-size: 2.6rem;
+  letter-spacing: 0.35em;
+  font-weight: 400;
+  color: #c9c2b3;
+  text-transform: uppercase;
+  margin-bottom: 0.75rem;
+}
+
+.start-box .tagline {
+  font-size: 0.95rem;
+  color: #7a746a;
+  font-style: italic;
+  margin-bottom: 2.5rem;
+  letter-spacing: 0.03em;
+}
+
+.start-box .instructions {
+  font-size: 0.85rem;
+  color: #a49d8f;
+  line-height: 1.8;
+}
+
+.start-box .instructions span {
+  font-size: 0.7rem;
+  color: #5a5548;
+  letter-spacing: 0.05em;
+}
