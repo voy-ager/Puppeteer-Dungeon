@@ -9,6 +9,12 @@
  *
  * Also extends the debug overlay to show enemy/director state, so you
  * can watch escalation and relief happen live.
+ *
+ * Noise mechanic (noise-detection update):
+ * noiseLevel (0–1) reflects how loudly the player is moving right now.
+ * It rises quickly when sprinting, decays slowly when still, and is
+ * zeroed while sneaking. director.js compares it against a threshold
+ * to trigger noise-based hunts independently of the comfort-based logic.
  */
 
 Game.telemetry = {
@@ -24,7 +30,14 @@ Game.telemetry = {
   enemyDistance: null,
   closeCallThreshold: 2.5,
   closeCallSeconds: 0,
+  noiseLevel: 0, // 0–1 signal consumed by director.js for the noise-triggered hunt pathway
 };
+
+// How fast the player needs to move (m/s) to reach noiseLevel 1.0.
+// Full sprint (~4.5 m/s) maps to ~0.9; a normal walk (~2.5 m/s) maps to
+// ~0.5, which is just below the director's noiseTriggerThreshold of 0.6 —
+// so walking is safe, sprinting is not (unless sneaking).
+const NOISE_SPEED_SCALE = 5.0;
 
 function initTelemetry() {
   Game.telemetry.lastPosition = Game.camera.position.clone();
@@ -56,6 +69,30 @@ function updateTelemetry(delta) {
   } else {
     t.idleStreak = 0;
   }
+
+  // --- Noise level update ---
+  // targetNoise is what noiseLevel should converge toward this frame.
+  // Sneaking zeros it completely — Shift is the explicit "be quiet" contract,
+  // and a partial noise floor while sneaking would undermine the mechanic.
+  // At normal speed, target scales linearly with velocity up to 1.0.
+  const targetNoise = Game.controls.sneaking
+    ? 0
+    : Math.min(speed / NOISE_SPEED_SCALE, 1);
+
+  if (targetNoise > t.noiseLevel) {
+    // Rise quickly — the player just started moving loudly and the enemy
+    // should react fast, not on a delay. Factor 8 reaches ~0.9 of the gap
+    // in about 0.3s at 60fps.
+    t.noiseLevel += (targetNoise - t.noiseLevel) * 8 * delta;
+  } else {
+    // Decay slowly — a brief pause doesn't instantly silence the player.
+    // Factor 1.5 halves noise in ~0.46s and reaches near-zero in ~2s,
+    // giving the enemy a small window to react even after the player stops.
+    t.noiseLevel += (targetNoise - t.noiseLevel) * 1.5 * delta;
+  }
+
+  // Clamp to [0, 1] — floating-point lerp can drift just outside bounds.
+  t.noiseLevel = Math.max(0, Math.min(1, t.noiseLevel));
 
   const roomHere = findRoomAt(pos.x, pos.z);
   if (roomHere !== t.currentRoom) {
@@ -96,6 +133,7 @@ function renderDebugOverlay() {
     <div>room: <b>${t.currentRoom || '—'}</b>${isBacktracking() ? ' (revisit)' : ''}</div>
     <div>distance walked: ${t.totalDistance.toFixed(1)}m</div>
     <div>idle streak: ${t.idleStreak.toFixed(1)}s</div>
+    <div>noise: ${t.noiseLevel.toFixed(2)}${Game.controls.sneaking ? ' (sneaking)' : ''}</div>
     <div>enemy distance: ${enemyDist}</div>
     <div>close-call time: ${t.closeCallSeconds.toFixed(1)}s</div>
     <div style="margin-top:6px;">enemy state: <b>${Game.enemy.state}</b></div>

@@ -6,6 +6,12 @@
  * the dungeon) instead of clamping to one rectangle. Movement is resolved
  * per-axis (X then Z) so the player slides along a wall instead of
  * stopping dead when approaching it at an angle.
+ *
+ * Sneak mechanic (noise-detection update):
+ * Holding Shift sets Game.controls.sneaking = true, which halves the
+ * per-frame effective speed cap without touching the base speed value.
+ * telemetry.js reads Game.controls.sneaking to suppress noise output,
+ * so Shift is the player's primary tool for avoiding noise-triggered hunts.
  */
 
 Game.controls = {
@@ -17,6 +23,7 @@ Game.controls = {
   sensitivity: 0.0022,
   speed: 4.5,
   playerRadius: 0.35,
+  sneaking: false, // true while Shift is held — halves effective speed and silences noise output
 };
 
 function initControls() {
@@ -63,6 +70,13 @@ function setMoveState(code, isDown) {
     case 'ArrowRight':
       Game.controls.move.right = isDown;
       break;
+    case 'ShiftLeft':
+    case 'ShiftRight':
+      // Shift is the player's "trade speed for quiet" lever. Holding it
+      // halves their movement cap AND zeros their noise output in telemetry.js —
+      // the two effects together make sneaking a meaningful risk/reward choice.
+      Game.controls.sneaking = isDown;
+      break;
   }
 }
 
@@ -104,9 +118,17 @@ function updateControls(delta) {
   velocity.x -= velocity.x * damping * delta;
   velocity.z -= velocity.z * damping * delta;
 
+  // Compute an effective speed cap for this frame rather than permanently
+  // mutating Game.controls.speed. This keeps the base value as the single
+  // authoritative "normal speed" — no cleanup needed on key-up, and nothing
+  // else that reads Game.controls.speed gets a stale halved value.
+  const effectiveSpeed = Game.controls.sneaking
+    ? Game.controls.speed * 0.5
+    : Game.controls.speed;
+
   const horizontalSpeed = Math.hypot(velocity.x, velocity.z);
-  if (horizontalSpeed > Game.controls.speed) {
-    const scale = Game.controls.speed / horizontalSpeed;
+  if (horizontalSpeed > effectiveSpeed) {
+    const scale = effectiveSpeed / horizontalSpeed;
     velocity.x *= scale;
     velocity.z *= scale;
   }

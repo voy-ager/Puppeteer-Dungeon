@@ -53,6 +53,29 @@ canvas {
   display: none;
 }
 
+/* Narrative subtitle — Granite-generated lines, bottom-center, fades in/out */
+#narrative-subtitle {
+  position: fixed;
+  bottom: 12%;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 70%;
+  text-align: center;
+  color: #d8d0c0;
+  font-style: italic;
+  font-size: 1.1rem;
+  line-height: 1.5;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 12;
+  transition: opacity 1.2s ease;
+}
+
+#narrative-subtitle.visible {
+  opacity: 1;
+}
+
 /* Start overlay */
 #start-overlay {
   position: fixed;

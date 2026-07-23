@@ -1,10 +1,8 @@
 /**
- * main.js — Week 2, Days 10-11 scope
+ * main.js — Day 14 scope
  *
- * Adds updateDirector(delta) to the loop, and accumulates Game.elapsedTime.
- * Order matters here: telemetry must be updated before the Director reads
- * it, and the Director must decide before the enemy moves, so the enemy
- * acts on the current frame's decision rather than lagging a frame behind.
+ * One addition: initNarrativeUI() in the boot sequence, so the subtitle
+ * element reference is cached before the Director ever tries to use it.
  */
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -12,6 +10,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initControls();
   initEnemy();
   initTelemetry();
+  initNarrativeUI();
 
   const overlay = document.getElementById('start-overlay');
   const crosshair = document.getElementById('crosshair');

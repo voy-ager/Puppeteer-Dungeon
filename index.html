@@ -13,6 +13,10 @@
   <!-- Debug overlay: live telemetry readout, toggle with T. On by default
      while building — hide it before recording the final demo. -->
   <div id="debug-overlay"></div>
+  <!-- Narrative subtitle: shows Granite-generated lines, faded in/out.
+     Triggered by director.js at hunt start, hunt end, and periodic
+     ambient/tension check-ins. Empty and invisible until shown. -->
+  <div id="narrative-subtitle"></div>
 
   <!-- Start overlay: click to lock the mouse and begin -->
   <div id="start-overlay">
@@ -35,6 +39,7 @@
   <script src="js/enemy.js"></script>
   <script src="js/telemetry.js"></script>
   <script src="js/director.js"></script>
+  <script src="js/narrativeUI.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>
