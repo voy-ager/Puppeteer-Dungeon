@@ -11,15 +11,18 @@
  *   - Fetching the generated paragraph from the Narrative Engine backend
  *   - Displaying, loading-stating, and dismissing the overlay
  *
- * Why does Game.recap.active pause gameplay?
+ * Why does Game.state === 'recap' pause gameplay?
  * The recap is the culminating moment of the session. Having the enemy
  * continue moving while the player reads (and can't react because they've
- * exited pointer lock) would be disorienting and unfair. A clean pause makes
- * the recap feel like an intentional mode, not a broken state.
+ * exited pointer lock) would be disorienting and unfair. Setting state to
+ * 'recap' gates out all gameplay updates in main.js's animate() loop, making
+ * the pause authoritative rather than a flag that every system must remember
+ * to check independently.
  *
  * Depends on:
  *   - NARRATIVE_API_BASE (defined in narrativeUI.js, loaded before this file)
  *   - Game.telemetry, Game.director, Game.elapsedTime (all available at runtime)
+ *   - setGameState() (defined in gamestate.js, loaded before this file)
  *   - #recap-overlay DOM element (defined in index.html)
  */
 
@@ -28,8 +31,9 @@
 // ---------------------------------------------------------------------------
 
 Game.recap = {
-  active:    false, // true while the overlay is showing; checked in main.js
-                    // to pause gameplay updates while the player reads
+  // 'active' has been removed — use Game.state === 'recap' instead.
+  // Game.state is the single source of truth (gamestate.js); a redundant
+  // local flag would drift out of sync and recreate the original bug.
   autoShown: false, // one-shot guard so final_chamber only auto-triggers once
   element:   null,  // cached #recap-overlay reference, set in initRecap()
 };
@@ -123,9 +127,13 @@ function formatStatsReadout(stats) {
  * broken overlay at the end of their session.
  */
 function triggerRecap() {
-  if (Game.recap.active) return; // already showing, don't stack
+  if (Game.state === 'recap') return; // already showing, don't stack
 
-  Game.recap.active = true;
+  // Transition first, before exitPointerLock(). This is the critical ordering:
+  // setGameState('recap') must run BEFORE the browser fires pointerlockchange,
+  // so that main.js's consolidated listener sees Game.state === 'recap' (not
+  // 'playing') and correctly skips the setGameState('paused') branch.
+  setGameState('recap');
 
   const overlay = Game.recap.element;
   if (!overlay) return;
@@ -138,8 +146,9 @@ function triggerRecap() {
   if (statsEl) statsEl.textContent = '';
 
   // Exit pointer lock so the player can interact with the overlay normally.
-  // The pointerlockchange listener in main.js is guarded by !Game.recap.active
-  // so the start-overlay won't reappear underneath.
+  // Game.state is already 'recap', so the pointerlockchange listener in
+  // main.js will see it and NOT call setGameState('paused') — the start-overlay
+  // will not reappear beneath the recap overlay.
   document.exitPointerLock();
 
   const stats = buildRecapStats();
@@ -171,15 +180,21 @@ function triggerRecap() {
 // ---------------------------------------------------------------------------
 
 function dismissRecap() {
-  if (!Game.recap.active) return;
+  if (Game.state !== 'recap') return;
 
-  Game.recap.active = false;
+  // Do NOT call setGameState('playing') here. The transition to 'playing'
+  // is deferred until the browser actually confirms the pointer lock below —
+  // the consolidated pointerlockchange listener in main.js handles it when
+  // it sees Game.state === 'recap' and locked === true. Calling setGameState
+  // prematurely here would hide the start-overlay before the lock is granted,
+  // which could cause a brief unlit canvas flash if the browser denies or
+  // delays the lock.
   const overlay = Game.recap.element;
   if (overlay) overlay.classList.add('hidden');
 
   // Re-request pointer lock so the player can continue exploring
-  // final_chamber. The game doesn't force a return to the start screen —
-  // the player may keep wandering if they wish.
+  // final_chamber. The transition to 'playing' (and resumeAudio) fires
+  // automatically via the pointerlockchange listener once the browser grants it.
   if (Game.renderer && Game.renderer.domElement) {
     Game.renderer.domElement.requestPointerLock();
   }
@@ -208,15 +223,15 @@ function initRecap() {
  * The autoShown flag is a one-shot guard — even if the player walks in and
  * out of final_chamber the recap only fires on the first entry.
  *
- * Called outside the Game.recap.active gate in main.js so it runs even when
- * gameplay is paused (though in practice it only matters when controls are
- * active and the player is moving normally).
+ * Called outside the Game.state === 'playing' gate in main.js so it can fire
+ * even when gameplay is paused (in practice the trigger only matters while the
+ * player is actively moving, but keeping it unconditional is simpler).
  */
 function checkRecapAutoTrigger() {
   if (
     Game.telemetry.currentRoom === 'final_chamber' &&
     !Game.recap.autoShown &&
-    !Game.recap.active
+    Game.state !== 'recap'
   ) {
     Game.recap.autoShown = true;
     triggerRecap();

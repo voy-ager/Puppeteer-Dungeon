@@ -29,14 +29,13 @@ Game.controls = {
 function initControls() {
   Game.camera.rotation.order = 'YXZ';
 
-  document.addEventListener('pointerlockchange', onPointerLockChange);
+  // pointerlockchange is intentionally NOT handled here. The consolidated
+  // listener in main.js sets Game.controls.enabled directly and calls
+  // setGameState() — having a second listener here would react to the same
+  // event independently without knowing the game's intended new state.
   document.addEventListener('mousemove', onMouseMove);
   document.addEventListener('keydown', (e) => setMoveState(e.code, true));
   document.addEventListener('keyup', (e) => setMoveState(e.code, false));
-}
-
-function onPointerLockChange() {
-  Game.controls.enabled = document.pointerLockElement === Game.renderer.domElement;
 }
 
 function onMouseMove(event) {

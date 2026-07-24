@@ -556,3 +556,43 @@ function playStinger() {
     console.warn('[audio] playStinger failed:', e);
   }
 }
+
+// ---------------------------------------------------------------------------
+// pauseAudio / resumeAudio — called by setGameState() in gamestate.js
+// ---------------------------------------------------------------------------
+
+/**
+ * Suspends the AudioContext, halting all audio processing at once.
+ * Using ctx.suspend() rather than zeroing individual gain nodes because it
+ * atomically silences every node in the graph — including nodes added later —
+ * without us having to enumerate them. The context retains its state so
+ * resume() picks up exactly where it left off.
+ */
+function pauseAudio() {
+  try {
+    const a = Game.audio;
+    // ctx is null until the player has clicked the start overlay at least once.
+    // A pre-click pause call (e.g. window losing focus immediately) is a no-op.
+    if (a.ctx && a.ctx.state === 'running') {
+      a.ctx.suspend();
+    }
+  } catch (err) {
+    console.warn('[Audio] pause failed:', err.message);
+  }
+}
+
+/**
+ * Resumes a suspended AudioContext. Matches the guard pattern of pauseAudio:
+ * only acts when ctx exists and is actually suspended, so calling it at any
+ * other time (e.g. double-resume) is safe.
+ */
+function resumeAudio() {
+  try {
+    const a = Game.audio;
+    if (a.ctx && a.ctx.state === 'suspended') {
+      a.ctx.resume();
+    }
+  } catch (err) {
+    console.warn('[Audio] resume failed:', err.message);
+  }
+}

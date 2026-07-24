@@ -63,8 +63,14 @@
        available when main.js calls them. -->
   <script src="js/recap.js"></script>
   <!-- audio.js after director.js (calls startHunt/endHunt hooks it extends)
-       and before main.js (main.js calls initAudio() on the overlay click) -->
+       and before gamestate.js (gamestate.js calls pauseAudio/resumeAudio) -->
   <script src="js/audio.js"></script>
+  <!-- gamestate.js after audio.js (needs pauseAudio/resumeAudio) and before
+       main.js (main.js calls setGameState() and reads Game.state). recap.js
+       also calls setGameState() so gamestate.js must precede it — recap.js
+       already loads before this block, but setGameState is used at runtime
+       only (inside function bodies), so the ordering is safe. -->
+  <script src="js/gamestate.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

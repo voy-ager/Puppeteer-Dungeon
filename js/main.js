@@ -1,15 +1,15 @@
 /**
- * main.js — Day 14 scope
+ * main.js — Game state machine integration
  *
- * One addition: initNarrativeUI() in the boot sequence, so the subtitle
- * element reference is cached before the Director ever tries to use it.
+ * The consolidated pointerlockchange listener here is the single place that
+ * reacts to pointer-lock events. It sets Game.controls.enabled and calls
+ * setGameState() (defined in gamestate.js), so controls.js, recap.js, and
+ * all future overlay modules never need their own competing listeners.
  *
- * NPC update: initNPC() added to boot sequence; updateNPC(delta) added to
- * the per-frame loop alongside the other update calls.
- *
- * Recap update: initRecap() added to boot sequence; checkRecapAutoTrigger()
- * called every frame; gameplay updates gated on !Game.recap.active so the
- * game visibly pauses while the player reads the recap overlay.
+ * Gameplay gate in animate() is now simply `Game.state === 'playing'`,
+ * replacing the previous two-flag check (Game.controls.enabled &&
+ * !Game.recap.active). All state-change consequences (overlay visibility,
+ * audio, crosshair) flow through setGameState().
  */
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -22,7 +22,9 @@ window.addEventListener('DOMContentLoaded', () => {
   initRecap();
 
   const overlay = document.getElementById('start-overlay');
-  const crosshair = document.getElementById('crosshair');
+  // Note: crosshair is NOT declared here. setGameState() in gamestate.js
+  // queries #crosshair directly, so declaring it here too would be misleading —
+  // main.js is no longer the owner of that element.
   const debugOverlay = document.getElementById('debug-overlay');
 
   overlay.addEventListener('click', () => {
@@ -31,18 +33,49 @@ window.addEventListener('DOMContentLoaded', () => {
     // is the natural trigger since it's the first deliberate action the player
     // takes. initAudio() is a no-op on subsequent clicks (guards on ctx).
     initAudio();
-    Game.renderer.domElement.requestPointerLock();
+    // Guard against requesting pointer lock when already playing — e.g. if
+    // the overlay somehow receives a click while lock is held. Redundant lock
+    // requests are harmless but the guard makes the intent explicit.
+    if (Game.state !== 'playing') {
+      Game.renderer.domElement.requestPointerLock();
+    }
   });
 
+  // ---------------------------------------------------------------------------
+  // Single authoritative pointerlockchange listener
+  //
+  // This is the ONLY place that reacts to pointer-lock events. controls.js
+  // previously had its own listener that set Game.controls.enabled; that
+  // duplicate has been removed. All state transitions and their UI/audio
+  // consequences flow through setGameState() in gamestate.js.
+  // ---------------------------------------------------------------------------
   document.addEventListener('pointerlockchange', () => {
     const locked = document.pointerLockElement === Game.renderer.domElement;
-    // Only toggle the start-overlay when the recap isn't active.
-    // triggerRecap() calls document.exitPointerLock() deliberately — without
-    // this guard the start-overlay would reappear underneath the recap overlay.
-    if (!Game.recap.active) {
-      overlay.classList.toggle('hidden', locked);
+
+    // Keep Game.controls.enabled in sync — onMouseMove and updateControls
+    // still gate on this flag directly for per-frame performance reasons.
+    Game.controls.enabled = locked;
+
+    if (locked) {
+      // Lock was just granted. Transition to 'playing' only from states that
+      // are explicitly waiting for a lock to begin or resume gameplay.
+      // 'recap' is included because recap.js's dismissRecap() requests a new
+      // lock without calling setGameState itself — the actual transition to
+      // 'playing' is deferred until the browser confirms the lock here.
+      if (Game.state === 'title' || Game.state === 'paused' || Game.state === 'recap') {
+        setGameState('playing');
+      }
+    } else {
+      // Lock was lost. Only auto-pause if we were actively playing.
+      // This is the critical guard that fixes the original overlay-flash bug:
+      // if we're in 'recap' (or future 'caught'/'escaped'), the lock loss was
+      // caused BY that state's own code calling exitPointerLock() intentionally —
+      // not by the player pressing ESC to pause — so we must NOT overwrite
+      // that state here.
+      if (Game.state === 'playing') {
+        setGameState('paused');
+      }
     }
-    crosshair.classList.toggle('hidden', !locked);
   });
 
   document.addEventListener('keydown', (e) => {
@@ -77,10 +110,11 @@ function animate() {
 
   const delta = Math.min(Game.clock.getDelta(), 0.1);
 
-  if (Game.controls.enabled && !Game.recap.active) {
-    // Gameplay updates are gated on both pointer-lock state AND recap state.
-    // While the recap overlay is showing the game world is effectively paused —
-    // enemy movement, telemetry, and the Director all hold their last state.
+  if (Game.state === 'playing') {
+    // Single state check replaces the previous two-flag test
+    // (Game.controls.enabled && !Game.recap.active). Game.state === 'playing'
+    // is true if and only if pointer lock is held AND no overlay is active —
+    // the consolidated pointerlockchange listener above ensures this invariant.
     Game.elapsedTime += delta;
 
     updateControls(delta);
@@ -92,9 +126,10 @@ function animate() {
   }
 
   // checkRecapAutoTrigger runs outside the gameplay gate — it needs to fire
-  // even before pointer lock is acquired (won't trigger in practice since
-  // currentRoom stays null until the player enters the dungeon, but keeping
-  // it unconditional is simpler than tracking an extra condition here).
+  // even when gameplay is paused (the trigger condition is a room check, not
+  // a movement check; keeping it unconditional is simpler than tracking an
+  // extra condition here and has no correctness risk since triggerRecap()
+  // itself guards against double-triggering via the Game.state check).
   checkRecapAutoTrigger();
 
   Game.renderer.render(Game.scene, Game.camera);
