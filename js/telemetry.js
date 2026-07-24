@@ -1,3 +1,8 @@
+// Module-level guard: prevents the door hint from re-triggering on every frame
+// while the player stands near the door. Resets when the player moves away so
+// the hint re-shows if they return — same _lastHidingHint pattern from hiding.js.
+let _doorHintShown = false;
+
 /**
  * telemetry.js — Week 2, Days 10-11 scope
  *
@@ -128,6 +133,34 @@ function updateTelemetry(delta) {
   }
 
   t.lastPosition.copy(pos);
+
+  // ---------------------------------------------------------------------------
+  // Locked door — unlock check and proximity hint
+  // ---------------------------------------------------------------------------
+
+  // Unlock: once the key is obtained, remove the door collider permanently.
+  // The null-guard means this check is a no-op after the first removal, so it
+  // costs nothing on subsequent frames.
+  if (Game.hasKey && Game.lockedDoorCollider) {
+    const idx = Game.colliders.indexOf(Game.lockedDoorCollider);
+    if (idx !== -1) Game.colliders.splice(idx, 1);
+    Game.lockedDoorCollider = null; // prevent re-check on every frame
+  }
+
+  // Door hint: show once when the player approaches the locked doorway (within
+  // 2m of the door centre at (0, -34.5)) and doesn't have the key yet.
+  // _doorHintShown resets when the player moves away so the hint re-shows on
+  // a return visit — the player may leave and come back after exploring.
+  const doorDist = Math.hypot(pos.x, pos.z - (-34.5));
+  if (!Game.hasKey && doorDist < 2) {
+    if (!_doorHintShown) {
+      _doorHintShown = true;
+      displaySubtitle('The way is sealed. Something else in this place may help.');
+    }
+  } else {
+    // Reset flag when player moves away so hint can re-show on return.
+    _doorHintShown = false;
+  }
 }
 
 function isBacktracking() {

@@ -56,6 +56,11 @@
   <script src="js/npc.js"></script>
   <script src="js/telemetry.js"></script>
   <script src="js/director.js"></script>
+  <!-- hiding.js after director.js (calls endHunt() from director.js at runtime).
+       Placed before narrativeUI.js in read order to make the director.js
+       dependency explicit, though both are just function definitions and the
+       actual calls only happen inside the game loop after all scripts load. -->
+  <script src="js/hiding.js"></script>
   <script src="js/narrativeUI.js"></script>
   <!-- recap.js after narrativeUI.js because it references the file-scope
        NARRATIVE_API_BASE constant that narrativeUI.js defines. Must be before

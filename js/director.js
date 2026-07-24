@@ -73,6 +73,11 @@ function updateDirector(delta) {
   // See Game.director.enabled comment above for the design rationale.
   if (!Game.director.enabled) return;
 
+  // Hiding guard: while the player is in a hiding spot, the Director makes
+  // zero decisions — no escalation, no capture check, no drone updates.
+  // This is a hard guarantee, not a soft signal: hiding must be completely safe.
+  if (Game.hiding && Game.hiding.active) return;
+
   const d = Game.director;
   const t = Game.telemetry;
   const enemy = Game.enemy;

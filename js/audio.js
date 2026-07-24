@@ -4,25 +4,25 @@
  * Everything here is generated live from the Web Audio API — no external
  * audio files, no CDN dependencies, no licensing concerns. Three layers:
  *
- *   1. Ambient drone  — four slightly-detuned low oscillators through a
- *      lowpass filter, with three intensity-driven additions:
- *        a) A thin dissonant sawtooth at 220 Hz through an 800 Hz highpass,
- *           so only the harmonic edge bleeds through — a faint sharpness
- *           that scales with intensity.
- *        b) A rising pitch-bend on the 62 Hz triangle oscillator during
- *           hunts — climbs to 90 Hz at maximum intensity, still low enough
- *           to feel connected to the bed rather than a separate melody.
- *        c) A parallel dry/wet waveshaping distortion path after the main
- *           filter — the dry signal always passes clean; the wet (distorted)
- *           path fades in only above ~0.7 intensity for subtle grit at the
- *           top of the dynamic range.
+ *   1. Ambient drone  — two low oscillators (55 Hz sine root, 62 Hz triangle)
+ *      through a lowpass filter into masterGain. The triangle serves as the
+ *      pitch-bend target during hunts — it climbs to 90 Hz at max intensity,
+ *      staying low enough to feel connected to the bed rather than a separate
+ *      melody. The drone is intentionally quiet (gain 0.08–0.35) so it reads
+ *      as subtext, not music.
  *
- *   2. Heartbeat      — a rhythmic low thump that plays only during hunts,
+ *   2. Sparse environmental sounds — intermittent one-shots (creak, knock,
+ *      scrape) scheduled randomly every 15–40 seconds. Each is built from
+ *      fresh nodes per play, self-terminating via envelope decay, panned
+ *      randomly for spatial variety. Silenced automatically during hunts
+ *      so they don't compete with the heartbeat and stinger.
+ *
+ *   3. Heartbeat      — a rhythmic low thump that plays only during hunts,
  *      speeding up as the enemy closes in. Each thump is a fresh short-lived
  *      oscillator node (not a gated persistent one — see scheduleBeat() for
  *      why that distinction matters).
  *
- *   3. Hunt stinger   — a one-shot transient the instant a hunt begins:
+ *   4. Hunt stinger   — a one-shot transient the instant a hunt begins:
  *      a pitch-dropping tone plus a burst of filtered noise, both fading out
  *      in under a third of a second.
  *
@@ -37,32 +37,30 @@
 // ---------------------------------------------------------------------------
 
 Game.audio = {
-  ctx: null,             // AudioContext — null until initAudio() is called
-  masterGain: null,      // final output bus, fixed low volume (0.28)
+  ctx: null,          // AudioContext — null until initAudio() is called
+  masterGain: null,   // final output bus, fixed low volume (0.28)
 
-  // Drone — created once in startAmbientDrone(), live until page unload
-  droneOscillators: [], // array of 4 OscillatorNode references (indices 0-3; [3] is the 62 Hz triangle)
-  droneGain: null,      // GainNode — volume target for setDroneIntensity()
-  droneFilter: null,    // BiquadFilterNode — cutoff also modulated by intensity
-
-  // Dry/wet distortion split — parallel paths after droneFilter
-  dryGain: null,        // GainNode — fixed ~1.0; the clean signal always passes
-  distortion: null,     // WaveShaperNode — mild soft-clip; audibility controlled by wetGain blend
-  wetGain: null,        // GainNode — 0 below intensity ~0.7, ramps to ~0.35 at intensity 1
-
-  // Dissonant high-frequency layer — thin sawtooth edge, scales with intensity
-  dissonantOsc: null,    // OscillatorNode — sawtooth at 220 Hz
-  dissonantFilter: null, // BiquadFilterNode — highpass ~800 Hz; only harmonic edge passes
-  dissonantGain: null,   // GainNode — scales with intensity; keeps it a texture, never a tone
+  // Drone — two oscillators created once in startAmbientDrone(), live until page unload.
+  // index 0: 55 Hz sine (root tone)
+  // index 1: 62 Hz triangle — pitch-bend target during hunts (was index 3 in the
+  //           old 4-oscillator version; reduced to 1 after removing 56.5 and 58 Hz)
+  droneOscillators: [],
+  droneGain:   null, // GainNode — volume target for setDroneIntensity()
+  droneFilter: null, // BiquadFilterNode — cutoff also modulated by intensity
 
   // Heartbeat — scheduler state
   heartbeatActive: false,
-  heartbeatTimeout: null,   // ID of the CURRENTLY pending setTimeout.
-                            // overwritten on every reschedule so stopHeartbeat()
-                            // always cancels the next-pending beat, not a stale one.
-  heartbeatInterval: 1100,  // ms between beats; recalculated per-beat from distance
+  heartbeatTimeout: null,  // ID of the CURRENTLY pending setTimeout.
+                           // overwritten on every reschedule so stopHeartbeat()
+                           // always cancels the next-pending beat, not a stale one.
+  heartbeatInterval: 1100, // ms between beats; recalculated per-beat from distance
 
-  // Reusable noise buffer — generated once at init, used by playStinger()
+  // Sparse ambient events — one-shot environmental sounds (creak, knock, scrape)
+  ambientEventsActive: false,
+  ambientEventTimeout: null, // pending setTimeout ID; overwrite-every-time pattern,
+                             // same as heartbeatTimeout above
+
+  // Reusable noise buffer — generated once at init, used by playStinger() and playFaintScrape()
   noiseBuffer: null,
 };
 
@@ -111,6 +109,10 @@ function initAudio() {
     // pointer and is moving, the oscillators are already running at low level.
     startAmbientDrone();
 
+    // Start the sparse ambient event scheduler. The first event fires after a
+    // random 15–40s delay, so there is no sound immediately on click.
+    startAmbientEvents();
+
   } catch (e) {
     console.warn('[audio] initAudio failed — audio disabled for this session:', e);
   }
@@ -121,37 +123,27 @@ function initAudio() {
 // ---------------------------------------------------------------------------
 
 /**
- * startAmbientDrone — creates the four-oscillator drone chain and starts it.
+ * startAmbientDrone — creates the two-oscillator drone chain and starts it.
  *
- * Full node graph:
+ * Full node graph (simplified from the previous 4-oscillator version):
  *
- *   osc[0] sine  55.0 Hz ──┐
- *   osc[1] sine  56.5 Hz ──┤
- *   osc[2] sine  58.0 Hz ──┼──► droneGain ──► droneFilter ──► dryGain  ──────────────► masterGain
- *   osc[3] tri   62.0 Hz ──┘                              └──► distortion ──► wetGain ──► masterGain
+ *   osc[0] sine     55.0 Hz ──┐
+ *   osc[1] triangle 62.0 Hz ──┴──► droneGain ──► droneFilter ──► masterGain
  *
- *   dissonantOsc (saw 220 Hz) ──► dissonantFilter (highpass 800 Hz) ──► dissonantGain ──► masterGain
+ * Why two oscillators instead of four?
+ * The previous 55/56.5/58/62 Hz cluster produced complex beating patterns, but
+ * at the new quieter gain range (0.08–0.35) much of that texture was inaudible.
+ * Two oscillators at 55 and 62 Hz still produce a slow 7 Hz beat that reads as
+ * organic without the CPU overhead of idle oscillators contributing nothing.
+ * The 62 Hz triangle is kept specifically because it is the pitch-bend target
+ * during hunts — that behaviour is unchanged; only the index changed from 3 to 1.
  *
- * Why four low oscillators?
- * Multiple oscillators spaced a few Hz apart produce slow amplitude modulation
- * (beating) at their difference frequencies. The cluster at 55/56.5/58/62 Hz
- * produces beats at 1.5, 1.5, 3, 4, 6, and 7 Hz — an irregular pattern that
- * reads as organic rather than mechanical. The triangle at 62 Hz also serves as
- * the pitch-bend target during hunts (see setDroneIntensity).
- *
- * Why the dissonant sawtooth at 220 Hz through an 800 Hz highpass?
- * The sawtooth's rich harmonic series extends well into the audible range, but
- * the highpass removes the fundamental and lower harmonics. Only the uppermost
- * partials bleed through — a thin, slightly sharp edge in the high-mid range
- * rather than a recognisable pitch. This adds tension as intensity rises without
- * introducing a melodic element that would undercut the horror atmosphere.
- *
- * Why a parallel dry/wet distortion split (not a serial insert)?
- * A WaveShaperNode in series would colour the whole signal at all times. The
- * parallel split lets the dry signal pass clean always — the waveshaper's grit
- * blends in only when wetGain rises above zero (above intensity ~0.7). This is
- * the standard "wet blend" pattern used in mixing: keep the clean transient
- * intact and only add saturation/colour on top.
+ * Why remove the dry/wet distortion split and dissonant layer?
+ * Both were designed for a louder, more prominent drone. At the new quieter
+ * baseline they would be inaudible at low intensity and jarring if they surfaced
+ * at high intensity against an otherwise sparse soundscape. The sparse ambient
+ * event system (creak/knock/scrape) provides textural variety instead, without
+ * the constant CPU cost of live oscillators and a WaveShaperNode.
  */
 function startAmbientDrone() {
   try {
@@ -160,79 +152,33 @@ function startAmbientDrone() {
 
     const ctx = a.ctx;
 
-    // --- Main drone gain + lowpass filter ---
+    // --- Drone gain ---
+    // Initial value matches the quiet floor of setDroneIntensity (level=0 → 0.08).
     const droneGain = ctx.createGain();
-    droneGain.gain.value = 0.4;
+    droneGain.gain.value = 0.08;
     a.droneGain = droneGain;
 
+    // --- Lowpass filter ---
+    // Cutoff starts at 120 Hz (level=0 in setDroneIntensity). Opens to 320 Hz
+    // at full intensity so the drone's character changes with danger level.
     const droneFilter = ctx.createBiquadFilter();
     droneFilter.type            = 'lowpass';
-    droneFilter.frequency.value = 180;
+    droneFilter.frequency.value = 120;
     droneFilter.Q.value         = 0.8;
     a.droneFilter = droneFilter;
 
+    // Direct connection: droneFilter → masterGain (no dry/wet split).
     droneGain.connect(droneFilter);
+    droneFilter.connect(a.masterGain);
 
-    // --- Dry/wet split after the main filter ---
-    // dryGain: the clean filtered signal, always passing through at full level.
-    // Kept at 1.0 and never ramped — the clean path is unconditional.
-    const dryGain = ctx.createGain();
-    dryGain.gain.value = 1.0;
-    a.dryGain = dryGain;
-    droneFilter.connect(dryGain);
-    dryGain.connect(a.masterGain);
-
-    // distortion: mild soft-clip waveshaper. The curve is a smooth cubic that
-    // gently compresses peaks above ~0.5 amplitude — it adds grit and harmonic
-    // content without the harsh aliasing of a hard-clip. The wetGain blend
-    // (not the curve itself) controls how much distortion is audible.
-    const distortion = ctx.createWaveShaper();
-    distortion.curve    = makeSoftClipCurve(256);
-    distortion.oversample = '2x'; // reduces aliasing artefacts from the shaper
-    a.distortion = distortion;
-    droneFilter.connect(distortion);
-
-    // wetGain: starts at 0 and only ramps up when intensity exceeds ~0.7.
-    // At maximum intensity it reaches ~0.35 — present but not dominant.
-    const wetGain = ctx.createGain();
-    wetGain.gain.value = 0;
-    a.wetGain = wetGain;
-    distortion.connect(wetGain);
-    wetGain.connect(a.masterGain);
-
-    // --- Dissonant high-frequency layer ---
-    // Sawtooth at 220 Hz — the harmonic series extends upward in integer
-    // multiples (220, 440, 660, 880 Hz…). The highpass at 800 Hz removes
-    // everything below, leaving only the upper partials as a thin, airy edge.
-    const dissonantOsc = ctx.createOscillator();
-    dissonantOsc.type            = 'sawtooth';
-    dissonantOsc.frequency.value = 220;
-    a.dissonantOsc = dissonantOsc;
-
-    const dissonantFilter = ctx.createBiquadFilter();
-    dissonantFilter.type            = 'highpass';
-    dissonantFilter.frequency.value = 800;
-    dissonantFilter.Q.value         = 0.7;
-    a.dissonantFilter = dissonantFilter;
-
-    // dissonantGain starts at 0 — the layer is inaudible until intensity rises.
-    // Maximum ceiling of 0.12 keeps it a texture rather than a competing element.
-    const dissonantGain = ctx.createGain();
-    dissonantGain.gain.value = 0;
-    a.dissonantGain = dissonantGain;
-
-    dissonantOsc.connect(dissonantFilter);
-    dissonantFilter.connect(dissonantGain);
-    dissonantGain.connect(a.masterGain);
-
-    // --- Low oscillators ---
-    // osc[3] is the 62 Hz triangle — stored last so its index is predictable
-    // for the pitch-bend in setDroneIntensity (droneOscillators[3].frequency).
+    // --- Oscillators ---
+    // osc[0] = 55 Hz sine (root tone, always present)
+    // osc[1] = 62 Hz triangle (pitch-bend target during hunts — was index 3 in
+    //          the old 4-oscillator array; now index 1 after removing 56.5 and
+    //          58 Hz. All references to droneOscillators[3] updated to [1].)
     const specs = [
       { type: 'sine',     freq: 55.0 },
-      { type: 'sine',     freq: 56.5 },
-      { type: 'sine',     freq: 58.0 },
-      { type: 'triangle', freq: 62.0 }, // index 3 — pitch-bend target during hunts
+      { type: 'triangle', freq: 62.0 }, // index 1 — pitch-bend target during hunts
     ];
     for (const { type, freq } of specs) {
       const osc = ctx.createOscillator();
@@ -243,32 +189,9 @@ function startAmbientDrone() {
       a.droneOscillators.push(osc);
     }
 
-    dissonantOsc.start();
-
   } catch (e) {
     console.warn('[audio] startAmbientDrone failed:', e);
   }
-}
-
-/**
- * makeSoftClipCurve — generates a Float32Array waveshaping curve.
- *
- * Uses a cubic soft-clip formula: y = x - x³/3, which compresses peaks
- * gently (unlike hard-clip which creates harsh square-wave aliasing).
- * The result is warm saturation — more amplitude colouring than distortion.
- *
- * @param {number} samples  Number of points in the curve (256 is plenty for
- *                          a smooth shape without excess memory use).
- */
-function makeSoftClipCurve(samples) {
-  const curve = new Float32Array(samples);
-  for (let i = 0; i < samples; i++) {
-    const x = (i * 2) / samples - 1; // normalise to [-1, 1]
-    // Cubic soft-clip: gentle compression. The /1.5 rescales the output back
-    // close to [-1, 1] range so the distortion doesn't clip the output.
-    curve[i] = (x - (x * x * x) / 3) / 1.5;
-  }
-  return curve;
 }
 
 /**
@@ -297,37 +220,22 @@ function setDroneIntensity(level, rampDuration = 2.0) {
     const now     = a.ctx.currentTime;
     const rampEnd = now + rampDuration;
 
-    // --- Main drone volume and filter ---
-    // Gain: 0 → 0.25 (quiet floor) to 1 → 0.95 (full presence)
-    a.droneGain.gain.linearRampToValueAtTime(0.25 + clamped * 0.70, rampEnd);
+    // --- Drone volume ---
+    // Gain range reduced to [0.08, 0.35] — the drone is now background texture,
+    // not a prominent musical element. The sparse environmental sounds provide
+    // moment-to-moment variety; the drone just establishes "something is here."
+    a.droneGain.gain.linearRampToValueAtTime(0.08 + clamped * 0.27, rampEnd);
 
-    // Filter cutoff: 0 → 120 Hz (muffled) to 1 → 320 Hz (present)
+    // --- Filter cutoff: 0 → 120 Hz (muffled) to 1 → 320 Hz (more present) ---
     a.droneFilter.frequency.linearRampToValueAtTime(120 + clamped * 200, rampEnd);
 
-    // --- Pitch-bend on the 62 Hz triangle oscillator (index 3) ---
+    // --- Pitch-bend on the 62 Hz triangle oscillator (index 1) ---
+    // Index changed from 3 to 1 after reducing to a 2-oscillator array.
     // Climbs from 62 Hz (at level 0) to 90 Hz (at level 1) — a noticeable
     // rise that stays within the drone's low-frequency register so it reads
     // as growing tension rather than the start of a melody.
-    if (a.droneOscillators[3]) {
-      a.droneOscillators[3].frequency.linearRampToValueAtTime(62 + clamped * 28, rampEnd);
-    }
-
-    // --- Dissonant high-frequency layer ---
-    // Scales linearly with intensity up to a ceiling of 0.12.
-    // At 0.12 the layer is a faint textural edge — present but not dominant.
-    if (a.dissonantGain) {
-      a.dissonantGain.gain.linearRampToValueAtTime(clamped * 0.12, rampEnd);
-    }
-
-    // --- Wet distortion blend ---
-    // Zero below intensity 0.7; linear rise from 0 to 0.35 between 0.7 and 1.0.
-    // The threshold means the distortion is completely absent at calm/mid
-    // intensities and only begins bleeding in as the drone reaches its peak.
-    // 0.35 maximum keeps it subtle — grit heard on close listening, not an
-    // effect that jumps out.
-    if (a.wetGain) {
-      const wetLevel = Math.max(0, (clamped - 0.7) / 0.3) * 0.35;
-      a.wetGain.gain.linearRampToValueAtTime(wetLevel, rampEnd);
+    if (a.droneOscillators[1]) {
+      a.droneOscillators[1].frequency.linearRampToValueAtTime(62 + clamped * 28, rampEnd);
     }
 
   } catch (e) {
@@ -554,6 +462,217 @@ function playStinger() {
 
   } catch (e) {
     console.warn('[audio] playStinger failed:', e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Part 3 — Sparse environmental one-shots
+// ---------------------------------------------------------------------------
+
+/**
+ * playCreak — a short wood/stone creak: sawtooth sweep through a bandpass,
+ * panned randomly for spatial variety. Duration 150–400 ms.
+ *
+ * Base frequency is randomised ±15% per call so repeated creaks never sound
+ * identical — the same structural approach as the heartbeat's fresh-node-per-
+ * beat pattern, but here the randomisation is in pitch rather than timing.
+ */
+function playCreak() {
+  try {
+    const a = Game.audio;
+    if (!a.ctx) return;
+    const ctx = a.ctx;
+    const now = ctx.currentTime;
+
+    // Randomise base frequency ±15% around 300 Hz.
+    const baseFreq  = 300 * (0.85 + Math.random() * 0.30); // 255–345 Hz
+    const endFreq   = baseFreq * 0.5;                       // sweep down to half
+    const duration  = 0.15 + Math.random() * 0.25;          // 150–400 ms
+
+    const osc    = ctx.createOscillator();
+    const filter = ctx.createBiquadFilter();
+    const gain   = ctx.createGain();
+    const panner = ctx.createStereoPanner();
+
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(baseFreq, now);
+    osc.frequency.exponentialRampToValueAtTime(endFreq, now + duration);
+
+    filter.type            = 'bandpass';
+    filter.frequency.value = 250;
+    filter.Q.value         = 3;
+
+    // Quick attack (20ms) then slower decay — the initial transient catches
+    // attention; the tail fades before it becomes annoying.
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.35, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    // Random pan: -0.7 (left) to 0.7 (right)
+    panner.pan.value = (Math.random() * 1.4) - 0.7;
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(panner);
+    panner.connect(a.masterGain);
+
+    osc.start(now);
+    osc.stop(now + duration + 0.01); // small cleanup margin past decay end
+
+  } catch (e) {
+    console.warn('[audio] playCreak failed:', e);
+  }
+}
+
+/**
+ * playDistantKnock — a single low thump (~45 Hz), ~80 ms.
+ * Same fast-attack / exponential-decay pattern as the heartbeat beat, but at a
+ * lower frequency and with a random pan so it reads as something in the walls
+ * rather than a body rhythm.
+ */
+function playDistantKnock() {
+  try {
+    const a = Game.audio;
+    if (!a.ctx) return;
+    const ctx = a.ctx;
+    const now = ctx.currentTime;
+
+    const osc    = ctx.createOscillator();
+    const gain   = ctx.createGain();
+    const panner = ctx.createStereoPanner();
+
+    osc.type            = 'sine';
+    osc.frequency.value = 45; // low enough to feel structural, not melodic
+
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.5, now + 0.005); // 5ms attack — thud, not swell
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08); // 80ms decay
+
+    panner.pan.value = (Math.random() * 1.4) - 0.7;
+
+    osc.connect(gain);
+    gain.connect(panner);
+    panner.connect(a.masterGain);
+
+    osc.start(now);
+    osc.stop(now + 0.09);
+
+  } catch (e) {
+    console.warn('[audio] playDistantKnock failed:', e);
+  }
+}
+
+/**
+ * playFaintScrape — ~1000 ms of narrow-band noise through a 600–900 Hz
+ * bandpass, slow attack and long decay. Reuses the existing noiseBuffer so
+ * no new buffer allocation is needed.
+ *
+ * Why reuse noiseBuffer (white noise) rather than generating new noise?
+ * The noiseBuffer was generated once in initAudio() for exactly this reason —
+ * random fill + createBuffer has real cost. The bandpass filter shapes the
+ * spectrum to the scrape character; the raw noise source is just an energy
+ * carrier. Reusing it is cheaper and produces indistinguishable results.
+ */
+function playFaintScrape() {
+  try {
+    const a = Game.audio;
+    if (!a.ctx || !a.noiseBuffer) return;
+    const ctx = a.ctx;
+    const now = ctx.currentTime;
+
+    const src    = ctx.createBufferSource();
+    const filter = ctx.createBiquadFilter();
+    const gain   = ctx.createGain();
+    const panner = ctx.createStereoPanner();
+
+    src.buffer = a.noiseBuffer;
+    src.loop   = false; // 1s buffer is longer than the envelope — tail is silent
+
+    // Narrow bandpass in the 600–900 Hz range: enough to be "texture" without
+    // being recognisable as white noise hiss (which reads as technical artefact).
+    filter.type            = 'bandpass';
+    filter.frequency.value = 750; // midpoint of 600–900 Hz
+    filter.Q.value         = 3.5; // narrow enough to colour the noise distinctly
+
+    // Slow attack (200ms) builds the scrape gradually — it should emerge from
+    // the room rather than appear suddenly. Decay over 800ms lets it fade
+    // naturally before the buffer runs out.
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.18, now + 0.2);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 1.0);
+
+    panner.pan.value = (Math.random() * 1.4) - 0.7;
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(panner);
+    panner.connect(a.masterGain);
+
+    src.start(now);
+    src.stop(now + 1.05); // slight margin past envelope end
+
+  } catch (e) {
+    console.warn('[audio] playFaintScrape failed:', e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sparse ambient event scheduler
+// ---------------------------------------------------------------------------
+
+/**
+ * scheduleAmbientEvent — internal self-rescheduling function for environmental sounds.
+ *
+ * Same overwrite-every-time timeout pattern as scheduleBeat(): each call stores
+ * its own setTimeout ID in Game.audio.ambientEventTimeout, so stopAmbientEvents()
+ * always cancels the currently pending event, not a stale one.
+ *
+ * Why skip playback during hunts?
+ * The heartbeat and stinger already provide intense audio presence during a hunt.
+ * A creak or knock in that moment would compete for attention and read as a second
+ * threat rather than environmental texture. Skipping playback (but not rescheduling)
+ * keeps the rhythm of the scheduler intact so events resume promptly after the hunt.
+ */
+function scheduleAmbientEvent() {
+  const a = Game.audio;
+  if (!a.ambientEventsActive || !a.ctx) return;
+
+  // Random interval: 15–40 seconds between events.
+  const delayMs = 15000 + Math.random() * 25000;
+
+  a.ambientEventTimeout = setTimeout(() => {
+    // Skip playback during hunts — but always reschedule so events resume after.
+    if (Game.enemy && Game.enemy.state !== 'hunt') {
+      // Randomly choose one of the three environmental sounds.
+      const roll = Math.random();
+      if      (roll < 0.40) playCreak();
+      else if (roll < 0.70) playDistantKnock();
+      else                  playFaintScrape();
+    }
+
+    // Reschedule unconditionally — hunt-skip doesn't break the cycle.
+    scheduleAmbientEvent();
+  }, delayMs);
+}
+
+/** Starts the sparse ambient event scheduler. Called once from initAudio(). */
+function startAmbientEvents() {
+  const a = Game.audio;
+  a.ambientEventsActive = true;
+  scheduleAmbientEvent();
+}
+
+/**
+ * Stops the ambient event scheduler. Not called anywhere currently — provided
+ * for symmetry with startAmbientEvents() and for future use (e.g. muting all
+ * non-essential audio on the caught/escaped ending screen).
+ */
+function stopAmbientEvents() {
+  const a = Game.audio;
+  a.ambientEventsActive = false;
+  if (a.ambientEventTimeout !== null) {
+    clearTimeout(a.ambientEventTimeout);
+    a.ambientEventTimeout = null;
   }
 }
 

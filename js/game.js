@@ -107,6 +107,29 @@ function buildDungeon() {
 
   buildRoomShell(0, -39, 9, 9, { south: { width: doorWidth, center: 0 } }, 'final_chamber');
 
+  // --- Locked door collider ---
+  // final_chamber's south wall is the x-axis wall at z = -34.5
+  // (cz + halfZ = -39 + 4.5). buildWallRun leaves a gap x∈[-1.5, 1.5] for
+  // the door. This collider fills exactly that gap, blocking movement until
+  // the player obtains the key from the NPC.
+  //
+  // Stored as a named reference on Game rather than pushed anonymously, so
+  // telemetry.js can splice it out of Game.colliders by reference when the
+  // player picks up the key.
+  //
+  // No visual mesh is added — the invisible blocker is intentional. The hint
+  // text ("The way is sealed…") tells the player something is there; the
+  // environment itself provides no visible wall to remove expectations about
+  // what will happen when the key is acquired.
+  Game.hasKey = false;
+  Game.lockedDoorCollider = {
+    minX: -1.5,
+    maxX:  1.5,
+    minZ: -34.5 - WALL_THICKNESS / 2, // -34.65
+    maxZ: -34.5 + WALL_THICKNESS / 2, // -34.35
+  };
+  Game.colliders.push(Game.lockedDoorCollider);
+
   const crate = new THREE.Mesh(
     new THREE.BoxGeometry(1, 1, 1),
     new THREE.MeshStandardMaterial({ color: 0x3a2f22, roughness: 0.8 })

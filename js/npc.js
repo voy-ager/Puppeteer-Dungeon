@@ -238,6 +238,17 @@ function updateNPC(delta) {
     Game.narrativeUI.element &&
     !Game.narrativeUI.element.classList.contains('visible')
   ) {
+    // Key grant — fires exactly once, on the first proximity event.
+    // Guard on !Game.hasKey so subsequent proximity triggers (the NPC still
+    // speaks on the normal 20s cooldown) don't re-grant or re-show the message.
+    // The displaySubtitle call happens regardless of subtitle visibility — the
+    // key pickup is a one-time story beat that should always show, not be
+    // suppressed because another subtitle happened to be fading.
+    if (!Game.hasKey) {
+      Game.hasKey = true;
+      displaySubtitle('You found a key.');
+    }
+
     // Choose beat type using the same telemetry signals the Director uses,
     // so the NPC's line always fits the current dramatic moment. The NPC
     // never decides to escalate — it only reflects what's already happening.

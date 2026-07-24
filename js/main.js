@@ -19,6 +19,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initNPC();
   initTelemetry();
   initNarrativeUI();
+  initHiding();
   initRecap();
 
   const overlay = document.getElementById('start-overlay');
@@ -82,6 +83,9 @@ window.addEventListener('DOMContentLoaded', () => {
     if (e.code === 'KeyT') {
       debugOverlay.classList.toggle('hidden');
     }
+    if (e.code === 'KeyE') {
+      toggleHiding();
+    }
     // 'O' toggles the Director on/off for the demo comparison recording.
     // The enemy keeps its current state when toggled off — no forced reset —
     // so the "disabled" recording shows the raw baseline from that moment.
@@ -126,11 +130,16 @@ function animate() {
     // the consolidated pointerlockchange listener above ensures this invariant.
     Game.elapsedTime += delta;
 
-    updateControls(delta);
+    // Movement is frozen while hiding — the player is committed to the spot.
+    // All other systems (telemetry, director, enemy) still run: the Director
+    // is suppressed by its own hiding guard, but telemetry and enemy continue
+    // so the session stats remain accurate and the enemy keeps patrolling.
+    if (!Game.hiding.active) updateControls(delta);
     updateTelemetry(delta);
     updateDirector(delta);
     updateEnemy(delta);
     updateNPC(delta);
+    updateHiding(delta);
     renderDebugOverlay();
   }
 
