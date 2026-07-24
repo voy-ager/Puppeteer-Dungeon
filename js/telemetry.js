@@ -137,7 +137,8 @@ function renderDebugOverlay() {
     <div>enemy distance: ${enemyDist}</div>
     <div>close-call time: ${t.closeCallSeconds.toFixed(1)}s</div>
     <div style="margin-top:6px;">enemy state: <b>${Game.enemy.state}</b></div>
-    <div>director: ${Game.director.lastEvent || '—'}</div>
-    <div style="opacity:0.5; margin-top:6px;">press T to hide</div>
+    <div>director: <b>${Game.director.enabled ? 'ENABLED' : 'DISABLED'}</b></div>
+    <div>last event: ${Game.director.lastEvent || '—'}</div>
+    <div style="opacity:0.5; margin-top:6px;">press T to hide · O to toggle director</div>
   `;
 }

@@ -22,6 +22,14 @@
  */
 
 Game.director = {
+  // Kill-switch for demo comparison — toggled by pressing 'O' in main.js.
+  // When false, updateDirector() returns immediately: no escalation, no
+  // narrative triggers, no drone changes. The enemy stays in whatever state
+  // it was in at the moment of the toggle — if it was hunting, it keeps
+  // hunting; the "off" comparison should show what zero Director logic
+  // produces from that point, not a scripted clean state.
+  enabled: true,
+
   lastDecisionTime: 0,
   decisionInterval: 2,
   huntCooldownUntil: 0,
@@ -46,9 +54,19 @@ Game.director = {
   // triggers it; a walking player (~0.5) stays just below it; sneaking (0)
   // never triggers it. Tuned to make the choice feel meaningful, not punishing.
   noiseTriggerThreshold: 0.6,
+
+  // --- Audio: hunt-state drone timer ---
+  // Tracks when the drone was last updated during a hunt. Kept separate from
+  // decisionInterval because enemy distance changes fast during a chase — we
+  // want the drone to track that at 0.4s resolution, not the 2s outer throttle.
+  huntDroneLastUpdate: 0,
 };
 
 function updateDirector(delta) {
+  // Kill-switch: when disabled the Director makes no decisions at all.
+  // See Game.director.enabled comment above for the design rationale.
+  if (!Game.director.enabled) return;
+
   const d = Game.director;
   const t = Game.telemetry;
   const enemy = Game.enemy;
@@ -59,6 +77,36 @@ function updateDirector(delta) {
 
     if (huntElapsed > d.maxHuntDuration || caughtUp) {
       endHunt();
+    }
+    // Update heartbeat tempo every frame while hunting — the new interval
+    // takes effect on the next scheduleBeat() reschedule, so tempo changes
+    // are smooth rather than mid-beat.
+    updateHeartbeatTempo(t.enemyDistance);
+
+    // Update the drone intensity on its own 0.4s timer, independent of both
+    // the per-frame heartbeat update and the 2s patrol throttle. Distance
+    // changes fast during a chase; 0.4s keeps the drone responsive without
+    // saturating the Web Audio automation queue.
+    // rampDuration 0.4 is passed explicitly so the ramp matches the call
+    // interval — each ramp completes before the next begins, preventing the
+    // overlapping-ramp glitch that a shorter ramp or longer interval would cause.
+    if (Game.elapsedTime - d.huntDroneLastUpdate >= 0.4) {
+      d.huntDroneLastUpdate = Game.elapsedTime;
+
+      // Map enemyDistance to intensity over the same [1.5, 10] metre range
+      // that updateHeartbeatTempo uses, so drone and heartbeat respond in sync.
+      const dist = t.enemyDistance;
+      let huntDroneIntensity;
+      if (dist === null || dist >= 10) {
+        huntDroneIntensity = 0.25; // enemy far away — calm floor
+      } else if (dist <= 1.5) {
+        huntDroneIntensity = 0.95; // enemy very close — maximum presence
+      } else {
+        // Linear map: 10m → 0.25, 1.5m → 0.95
+        const frac = (dist - 1.5) / (10 - 1.5); // 1=far, 0=near
+        huntDroneIntensity = 0.95 - frac * 0.70;
+      }
+      setDroneIntensity(huntDroneIntensity, 0.4);
     }
     return;
   }
@@ -86,6 +134,17 @@ function updateDirector(delta) {
   // --- Comfort-based escalation ---
   if (Game.elapsedTime - d.lastDecisionTime < d.decisionInterval) return;
   d.lastDecisionTime = Game.elapsedTime;
+
+  // --- Drone intensity: driven by relief-window progress ---
+  // reliefRemaining counts down from reliefDuration to 0 after each hunt.
+  // At full relief (just after a hunt), intensity is elevated (0.60) so
+  // the bed sounds unsettled. As the cooldown drains, it returns to the
+  // calm floor (0.25). During ordinary patrol (no recent hunt) reliefRemaining
+  // is 0 and intensity stays at the floor. No new state needed — huntCooldownUntil
+  // and reliefDuration already encode everything required.
+  const reliefRemaining = Math.max(0, d.huntCooldownUntil - Game.elapsedTime);
+  const droneIntensity  = 0.25 + (reliefRemaining / d.reliefDuration) * 0.35;
+  setDroneIntensity(droneIntensity);
 
   // --- Ambient/tension check-in ---
   // Runs independently of the escalation cooldown below — the game should
@@ -115,6 +174,12 @@ function startHunt() {
   Game.director.lastEvent = 'escalating — enemy is hunting';
   console.log('[Director] escalating: switching enemy to hunt');
   showNarrativeLine('hunt_taunt');
+  // Audio: the stinger fires once at the moment of escalation (a transient
+  // cue that something changed), then the heartbeat runs for the hunt's
+  // duration. Both are fire-and-forget — director.js doesn't manage their
+  // internals, only the start/stop boundary.
+  playStinger();
+  startHeartbeat();
 }
 
 function endHunt() {
@@ -124,4 +189,8 @@ function endHunt() {
   Game.director.lastEvent = `relief — patrol resumes (calm for ${Game.director.reliefDuration}s)`;
   console.log('[Director] relief: enemy back to patrol');
   showNarrativeLine('relief');
+  // Audio: silence the heartbeat as soon as the hunt ends. The drone will
+  // gradually settle from its elevated relief intensity back to calm over
+  // the next few setDroneIntensity() calls in updateDirector().
+  stopHeartbeat();
 }

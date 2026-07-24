@@ -37,9 +37,16 @@
   <script src="js/game.js"></script>
   <script src="js/controls.js"></script>
   <script src="js/enemy.js"></script>
+  <!-- npc.js after enemy.js (shares rig pattern); before director.js and
+       narrativeUI.js (calls showNarrativeLine and reads telemetry/director state,
+       but neither director.js nor narrativeUI.js depends on npc.js being loaded first) -->
+  <script src="js/npc.js"></script>
   <script src="js/telemetry.js"></script>
   <script src="js/director.js"></script>
   <script src="js/narrativeUI.js"></script>
+  <!-- audio.js after director.js (calls startHunt/endHunt hooks it extends)
+       and before main.js (main.js calls initAudio() on the overlay click) -->
+  <script src="js/audio.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>
