@@ -33,9 +33,9 @@
 
 'use strict';
 
-const { interpretContext } = require('./interpreter');
-const { buildPrompt }      = require('./promptBuilder');
-const { generateText }     = require('./watsonxClient');
+const { interpretContext }            = require('./interpreter');
+const { buildPrompt, buildRecapPrompt } = require('./promptBuilder');
+const { generateText }                = require('./watsonxClient');
 
 // --- Fallback lines ---------------------------------------------------------
 
@@ -161,4 +161,120 @@ async function generateWithFallback(beatType, gameState) {
   return fallback;
 }
 
-module.exports = { cleanAndValidate, generateWithFallback, FALLBACK_LINES };
+// ---------------------------------------------------------------------------
+// Recap validation and generation
+// ---------------------------------------------------------------------------
+
+/**
+ * FALLBACK_RECAP — hardcoded paragraph served when Granite fails twice for a
+ * recap request. Written in the same second-person, atmospheric tone as
+ * generated recaps so a fallback never feels like an error state.
+ *
+ * Generic by necessity (no session-specific numbers), but still evocative —
+ * the player should feel the dungeon acknowledged them even if Granite was
+ * unavailable.
+ */
+const FALLBACK_RECAP = `You passed through, and the dungeon noted it. The stone corridors registered \
+your footsteps, your pauses, the moments you hesitated at a junction and chose wrong. Something was \
+present the entire time — patient, unhurried, certain of its ground. Whether you moved quickly or \
+slowly, loudly or in near-silence, it watched. The dungeon does not forget the ones who walk its \
+halls. It simply waits for the next one.`;
+
+/**
+ * MAX_RECAP_WORD_COUNT — the upper bound for a valid recap paragraph.
+ * Set to 180 to accommodate Granite's natural tendency to run slightly over
+ * the 120-word target. Beyond 180 words the paragraph is too long to read
+ * comfortably as a single-screen overlay and is rejected so the retry has
+ * a chance to produce something tighter.
+ */
+const MAX_RECAP_WORD_COUNT = 180;
+
+/**
+ * cleanAndValidateRecap — strips cosmetic artifacts from raw Granite output
+ * and validates that the result is usable as a recap paragraph.
+ *
+ * Uses the same stripping logic as cleanAndValidate (markdown fences,
+ * surrounding quotes, whitespace) but with a relaxed word-count ceiling.
+ * The 40-word cap used for beat-type lines would reject every valid recap —
+ * a paragraph is the intended output here, not a one-liner.
+ *
+ * @param {string} rawText
+ * @returns {string|null} Clean paragraph, or null if empty or over the cap.
+ */
+function cleanAndValidateRecap(rawText) {
+  if (typeof rawText !== 'string') return null;
+
+  let cleaned = rawText.trim();
+
+  cleaned = cleaned.replace(/^```[\s\S]*?```$/m, s => s.slice(3, -3).trim());
+  cleaned = cleaned.replace(/^```|```$/g, '').trim();
+
+  if (
+    (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+    (cleaned.startsWith("'") && cleaned.endsWith("'"))
+  ) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+
+  if (!cleaned) return null;
+
+  const wordCount = cleaned.split(/\s+/).filter(Boolean).length;
+  if (wordCount > MAX_RECAP_WORD_COUNT) {
+    console.warn(`[qualityCheck] Recap rejected — ${wordCount} words (max ${MAX_RECAP_WORD_COUNT})`);
+    return null;
+  }
+
+  return cleaned;
+}
+
+/**
+ * generateRecapWithFallback — builds and generates a session recap paragraph,
+ * always resolving to a non-empty string.
+ *
+ * Structurally parallel to generateWithFallback: same retry-once-then-fallback
+ * pattern, same generateText call, same "always returns a string" contract.
+ * The differences are:
+ *   - Uses buildRecapPrompt(stats) instead of buildPrompt(beatType, gameState)
+ *   - Validates with cleanAndValidateRecap (180-word cap) not cleanAndValidate
+ *   - Falls back to FALLBACK_RECAP not FALLBACK_LINES
+ *
+ * Why the same retry count (one)?
+ * A recap is a single synchronous request that the player is actively waiting
+ * for — the loading state is visible. Two retries would mean up to ~6s of
+ * visible "thinking" on a slow API, which feels worse than showing the fallback
+ * quickly. One retry catches transient errors; a second failure gets the fallback.
+ *
+ * @param {object} stats - Session stats from buildRecapStats() on the client.
+ * @returns {Promise<string>} Always resolves to a paragraph string.
+ */
+async function generateRecapWithFallback(stats) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const prompt  = buildRecapPrompt(stats);
+      const rawText = await generateText(prompt);
+      const recap   = cleanAndValidateRecap(rawText);
+
+      if (recap) {
+        console.log(`[qualityCheck] recap attempt ${attempt} OK (${recap.split(/\s+/).length} words)`);
+        return recap;
+      }
+
+      console.warn(`[qualityCheck] recap attempt ${attempt} unusable — ${attempt < 2 ? 'retrying' : 'using fallback'}`);
+
+    } catch (err) {
+      console.warn(`[qualityCheck] recap attempt ${attempt} threw: ${err.message} — ${attempt < 2 ? 'retrying' : 'using fallback'}`);
+    }
+  }
+
+  console.warn('[qualityCheck] Recap falling back to hardcoded paragraph');
+  return FALLBACK_RECAP;
+}
+
+module.exports = {
+  cleanAndValidate,
+  generateWithFallback,
+  FALLBACK_LINES,
+  cleanAndValidateRecap,
+  generateRecapWithFallback,
+  FALLBACK_RECAP,
+};

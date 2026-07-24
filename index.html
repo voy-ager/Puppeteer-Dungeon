@@ -18,6 +18,19 @@
      ambient/tension check-ins. Empty and invisible until shown. -->
   <div id="narrative-subtitle"></div>
 
+  <!-- Recap overlay: shown at session end (final_chamber auto-trigger or R key).
+       Sits above the game canvas (z-index 25) but below the start overlay (z-index 20
+       is bypassed — see start-overlay's z-index in style.css). The .hidden class uses
+       the same opacity-fade pattern as #start-overlay so the transition feels intentional
+       rather than abrupt. recap.js owns all DOM interaction with this element. -->
+  <div id="recap-overlay" class="hidden">
+    <div class="recap-box">
+      <p class="recap-text"></p>
+      <p class="recap-stats"></p>
+      <p class="recap-hint">Click or press ESC to continue</p>
+    </div>
+  </div>
+
   <!-- Start overlay: click to lock the mouse and begin -->
   <div id="start-overlay">
     <div class="start-box">
@@ -44,6 +57,11 @@
   <script src="js/telemetry.js"></script>
   <script src="js/director.js"></script>
   <script src="js/narrativeUI.js"></script>
+  <!-- recap.js after narrativeUI.js because it references the file-scope
+       NARRATIVE_API_BASE constant that narrativeUI.js defines. Must be before
+       audio.js and main.js so initRecap() and checkRecapAutoTrigger() are
+       available when main.js calls them. -->
+  <script src="js/recap.js"></script>
   <!-- audio.js after director.js (calls startHunt/endHunt hooks it extends)
        and before main.js (main.js calls initAudio() on the overlay click) -->
   <script src="js/audio.js"></script>

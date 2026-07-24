@@ -55,6 +55,12 @@ Game.director = {
   // never triggers it. Tuned to make the choice feel meaningful, not punishing.
   noiseTriggerThreshold: 0.6,
 
+  // --- Recap stats counters ---
+  // Lifetime totals used to personalise the recap paragraph at session end.
+  huntCount:             0, // total number of hunts this session
+  noiseTriggeredCount:   0, // hunts triggered by the player moving too loudly
+  comfortTriggeredCount: 0, // hunts triggered by comfort signals (idle/backtrack)
+
   // --- Audio: hunt-state drone timer ---
   // Tracks when the drone was last updated during a hunt. Kept separate from
   // decisionInterval because enemy distance changes fast during a chase — we
@@ -127,7 +133,7 @@ function updateDirector(delta) {
     t.noiseLevel > d.noiseTriggerThreshold
   ) {
     d.lastEvent = 'noise trigger — player heard';
-    startHunt();
+    startHunt('noise');
     return;
   }
 
@@ -164,11 +170,24 @@ function updateDirector(delta) {
     t.enemyDistance === null || t.enemyDistance > d.safeEscalationDistance;
 
   if (playerSeemsComfortable && enemyFarEnoughToEscalate) {
-    startHunt();
+    startHunt('comfort');
   }
 }
 
-function startHunt() {
+/**
+ * startHunt(reason) — escalates the enemy to hunt state.
+ *
+ * @param {'comfort'|'noise'} reason  Why the hunt was triggered.
+ *   'comfort' — player was idle or backtracking (comfort-based pathway)
+ *   'noise'   — player moved too loudly within hearing range
+ *
+ * The reason parameter is only used here for stats tracking; by the time this
+ * function runs, both pathways look identical from the inside (enemy.state is
+ * 'patrol', cooldown has cleared). The call site is the only place that knows
+ * why the hunt started — passing it in makes the code self-documenting and
+ * gives the recap generator accurate data to write from.
+ */
+function startHunt(reason) {
   Game.enemy.state = 'hunt';
   Game.director.huntStartTime = Game.elapsedTime;
   Game.director.lastEvent = 'escalating — enemy is hunting';
@@ -180,6 +199,14 @@ function startHunt() {
   // internals, only the start/stop boundary.
   playStinger();
   startHeartbeat();
+
+  // Increment session-level hunt counters for the recap generator.
+  Game.director.huntCount++;
+  if (reason === 'noise') {
+    Game.director.noiseTriggeredCount++;
+  } else {
+    Game.director.comfortTriggeredCount++;
+  }
 }
 
 function endHunt() {

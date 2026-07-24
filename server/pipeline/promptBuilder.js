@@ -111,4 +111,127 @@ function buildPrompt(beatType, gameState) {
     .join('\n');
 }
 
-module.exports = { buildPrompt };
+// ---------------------------------------------------------------------------
+// Recap prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * RECAP_PREAMBLE — the system instruction for recap generation.
+ *
+ * Kept separate from SYSTEM_PREAMBLE because the two outputs have fundamentally
+ * different requirements: SYSTEM_PREAMBLE asks for one line under 25 words;
+ * the recap asks for a full paragraph of 80-120 words in second person.
+ * Reusing the same preamble would fight against the length target on every call.
+ */
+const RECAP_PREAMBLE = `You are writing a personalized narrative recap for a player who has just finished \
+a horror dungeon-crawl game. Write in second person ("You..."). The tone is the same atmospheric dread \
+and isolation as the rest of the game — cold stone, something watching, the weight of passing through \
+a place that remembers you. Never describe gore or graphic violence. Never use the word "darkness" as a \
+lazy shortcut. Write exactly ONE paragraph of approximately 80 to 120 words. \
+No quotation marks. No headings. No summary label. Begin with the word "You".`;
+
+/**
+ * buildRecapPrompt — constructs a Granite prompt personalised to this session's stats.
+ *
+ * Stats with zero or empty values are omitted from the prompt so Granite is
+ * never asked to write about things that didn't happen (e.g. "0 hunts" would
+ * produce awkward phrasing). Each included stat is framed as a natural prose
+ * instruction rather than raw JSON so the model can weave the numbers into
+ * narrative rather than listing them.
+ *
+ * @param {object} stats
+ * @param {number}   stats.totalDistance         - metres walked this session
+ * @param {number}   stats.totalPlayTimeSeconds   - total elapsed seconds
+ * @param {number}   stats.huntCount              - times the enemy hunted the player
+ * @param {number}   stats.noiseTriggeredCount    - hunts triggered by noise
+ * @param {number}   stats.comfortTriggeredCount  - hunts triggered by comfort signals
+ * @param {number}   stats.closeCallSeconds       - seconds within close-call range
+ * @param {number}   stats.sneakTimeSeconds       - seconds spent sneaking
+ * @param {string[]} stats.backtrackedRooms        - rooms visited more than once
+ *
+ * @returns {string} Complete prompt ready for Granite.
+ */
+function buildRecapPrompt(stats) {
+  const {
+    totalDistance        = 0,
+    totalPlayTimeSeconds = 0,
+    huntCount            = 0,
+    noiseTriggeredCount  = 0,
+    comfortTriggeredCount = 0,
+    closeCallSeconds     = 0,
+    sneakTimeSeconds     = 0,
+    backtrackedRooms     = [],
+  } = stats;
+
+  const minutes = Math.round(totalPlayTimeSeconds / 60);
+
+  // Build an array of contextual lines — only include stats that actually
+  // happened in this session. Empty lines are filtered before joining.
+  const contextLines = [];
+
+  if (minutes > 0) {
+    contextLines.push(`The player spent approximately ${minutes} minute${minutes !== 1 ? 's' : ''} in the dungeon.`);
+  }
+
+  if (totalDistance > 0) {
+    contextLines.push(`They walked roughly ${totalDistance.toFixed(1)} metres in total.`);
+  }
+
+  if (huntCount > 0) {
+    // Break down hunt causes when both types occurred — the distinction
+    // between "heard" and "comfortable" adds texture to the recap.
+    if (noiseTriggeredCount > 0 && comfortTriggeredCount > 0) {
+      contextLines.push(
+        `They were hunted ${huntCount} time${huntCount !== 1 ? 's' : ''} — ` +
+        `${noiseTriggeredCount} because they moved too loudly, ` +
+        `${comfortTriggeredCount} because they seemed too comfortable.`
+      );
+    } else if (noiseTriggeredCount > 0) {
+      contextLines.push(
+        `They were hunted ${huntCount} time${huntCount !== 1 ? 's' : ''}, each time because they moved too loudly.`
+      );
+    } else {
+      contextLines.push(
+        `They were hunted ${huntCount} time${huntCount !== 1 ? 's' : ''}, each time by lingering too long.`
+      );
+    }
+  }
+
+  if (closeCallSeconds > 5) {
+    contextLines.push(
+      `They spent ${closeCallSeconds.toFixed(1)} seconds within arm's reach of the creature.`
+    );
+  }
+
+  if (sneakTimeSeconds > 10) {
+    contextLines.push(
+      `They crept silently for ${sneakTimeSeconds} second${sneakTimeSeconds !== 1 ? 's' : ''} — ` +
+      `long enough that it must have mattered.`
+    );
+  }
+
+  if (backtrackedRooms.length > 0) {
+    // Underscore-to-space substitution for legibility in the prompt.
+    // A proper human-readable label map (e.g. "room_2" → "the second chamber")
+    // could replace this later; for now the room identifiers are clear enough.
+    const roomList = backtrackedRooms
+      .map(r => r.replace(/_/g, ' '))
+      .join(' and ');
+    contextLines.push(`They retraced their steps through the ${roomList}.`);
+  }
+
+  const contextBlock = contextLines.length > 0
+    ? contextLines.join(' ')
+    : 'The player moved through the dungeon without incident.';
+
+  return [
+    RECAP_PREAMBLE,
+    '',
+    'Session details:',
+    contextBlock,
+    '',
+    'Write the paragraph now. No quotation marks. No headings. No summary label. Begin with "You".',
+  ].join('\n');
+}
+
+module.exports = { buildPrompt, buildRecapPrompt };

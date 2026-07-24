@@ -127,3 +127,67 @@ canvas {
   color: #5a5548;
   letter-spacing: 0.05em;
 }
+
+/* ---------------------------------------------------------------------------
+   Recap overlay — session-end narrative panel
+   z-index 25: above game canvas and debug chrome, below nothing (start-overlay
+   at z-index 20 is explicitly hidden before recap is ever shown via the
+   !Game.recap.active guard in main.js pointerlockchange handler).
+   Uses the same opacity-fade .hidden pattern as #start-overlay so the overlay
+   appears to materialise rather than snap in.
+   --------------------------------------------------------------------------- */
+
+#recap-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  background: rgba(0, 0, 0, 0.88);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.6s ease;
+}
+
+#recap-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Constrained inner card — centred, generous vertical padding */
+.recap-box {
+  max-width: 640px;
+  padding: 3rem 2.5rem;
+  text-align: center;
+}
+
+/* The generated narrative paragraph — serif for a literary, memento feel.
+   Matches the warm parchment tone of #narrative-subtitle but larger and
+   more deliberate, signalling "this is the end-of-session moment". */
+.recap-text {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-style: italic;
+  color: #d8d0c0;
+  font-size: 1.15rem;
+  line-height: 1.8;
+}
+
+/* Raw telemetry numbers in monospace — a quiet data layer beneath the prose.
+   Muted so it reads as supporting context, not competing with the paragraph. */
+.recap-stats {
+  font-family: 'Courier New', monospace;
+  font-size: 0.78rem;
+  color: #7a746a;
+  margin-top: 1.8rem;
+  line-height: 1.7;
+}
+
+/* Dismiss hint — same dim monospace style as .start-box .instructions span,
+   reinforcing the visual language that spans in this game mean "secondary
+   control information". */
+.recap-hint {
+  font-size: 0.7rem;
+  color: #5a5548;
+  letter-spacing: 0.05em;
+  margin-top: 2rem;
+  font-family: 'Courier New', monospace;
+}

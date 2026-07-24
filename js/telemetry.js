@@ -15,6 +15,11 @@
  * It rises quickly when sprinting, decays slowly when still, and is
  * zeroed while sneaking. director.js compares it against a threshold
  * to trigger noise-based hunts independently of the comfort-based logic.
+ *
+ * Recap stats (recap generator):
+ * sneakTime is a lifetime total of seconds spent sneaking — distinct from
+ * noiseLevel (a real-time signal) in that it never decays. Used by recap.js
+ * to personalise the session summary.
  */
 
 Game.telemetry = {
@@ -31,6 +36,7 @@ Game.telemetry = {
   closeCallThreshold: 2.5,
   closeCallSeconds: 0,
   noiseLevel: 0, // 0–1 signal consumed by director.js for the noise-triggered hunt pathway
+  sneakTime:  0, // cumulative seconds spent sneaking this session — for the recap generator
 };
 
 // How fast the player needs to move (m/s) to reach noiseLevel 1.0.
@@ -93,6 +99,13 @@ function updateTelemetry(delta) {
 
   // Clamp to [0, 1] — floating-point lerp can drift just outside bounds.
   t.noiseLevel = Math.max(0, Math.min(1, t.noiseLevel));
+
+  // Accumulate sneak time as a simple lifetime total.
+  // Unlike noiseLevel this never decays — it answers "how long did the player
+  // choose to sneak in total," which is what the recap generator needs.
+  if (Game.controls.sneaking) {
+    t.sneakTime += delta;
+  }
 
   const roomHere = findRoomAt(pos.x, pos.z);
   if (roomHere !== t.currentRoom) {

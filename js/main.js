@@ -6,6 +6,10 @@
  *
  * NPC update: initNPC() added to boot sequence; updateNPC(delta) added to
  * the per-frame loop alongside the other update calls.
+ *
+ * Recap update: initRecap() added to boot sequence; checkRecapAutoTrigger()
+ * called every frame; gameplay updates gated on !Game.recap.active so the
+ * game visibly pauses while the player reads the recap overlay.
  */
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -15,6 +19,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initNPC();
   initTelemetry();
   initNarrativeUI();
+  initRecap();
 
   const overlay = document.getElementById('start-overlay');
   const crosshair = document.getElementById('crosshair');
@@ -31,7 +36,12 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.addEventListener('pointerlockchange', () => {
     const locked = document.pointerLockElement === Game.renderer.domElement;
-    overlay.classList.toggle('hidden', locked);
+    // Only toggle the start-overlay when the recap isn't active.
+    // triggerRecap() calls document.exitPointerLock() deliberately — without
+    // this guard the start-overlay would reappear underneath the recap overlay.
+    if (!Game.recap.active) {
+      overlay.classList.toggle('hidden', locked);
+    }
     crosshair.classList.toggle('hidden', !locked);
   });
 
@@ -46,6 +56,17 @@ window.addEventListener('DOMContentLoaded', () => {
       Game.director.enabled = !Game.director.enabled;
       console.log(`[Director] toggled ${Game.director.enabled ? 'ON' : 'OFF'}`);
     }
+    // 'R' manually triggers the recap at any time — useful for demo recordings
+    // and for testing the overlay without waiting for final_chamber.
+    if (e.code === 'KeyR') {
+      triggerRecap();
+    }
+    // ESC dismisses the recap overlay if it's showing. The browser also fires
+    // ESC to release pointer lock, which the pointerlockchange handler already
+    // handles; this ensures the overlay itself is hidden in the same keypress.
+    if (e.code === 'Escape') {
+      dismissRecap();
+    }
   });
 
   animate();
@@ -56,7 +77,10 @@ function animate() {
 
   const delta = Math.min(Game.clock.getDelta(), 0.1);
 
-  if (Game.controls.enabled) {
+  if (Game.controls.enabled && !Game.recap.active) {
+    // Gameplay updates are gated on both pointer-lock state AND recap state.
+    // While the recap overlay is showing the game world is effectively paused —
+    // enemy movement, telemetry, and the Director all hold their last state.
     Game.elapsedTime += delta;
 
     updateControls(delta);
@@ -66,6 +90,12 @@ function animate() {
     updateNPC(delta);
     renderDebugOverlay();
   }
+
+  // checkRecapAutoTrigger runs outside the gameplay gate — it needs to fire
+  // even before pointer lock is acquired (won't trigger in practice since
+  // currentRoom stays null until the player enters the dungeon, but keeping
+  // it unconditional is simpler than tracking an extra condition here).
+  checkRecapAutoTrigger();
 
   Game.renderer.render(Game.scene, Game.camera);
 }

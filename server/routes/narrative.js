@@ -22,13 +22,24 @@
  *     Bypasses the pool entirely and runs the full pipeline synchronously,
  *     returning the raw result. Used for smoke-testing the Granite
  *     connection and prompt quality without waiting for the scheduler.
+ *
+ *   POST /api/narrative/recap
+ *     Accepts a session stats object as JSON body and generates one
+ *     personalised recap paragraph. Entirely separate from the pool/beat-type
+ *     system — this is a single synchronous request made once per session
+ *     when the player reaches the final room. Returns { recap, source }.
  */
 
 'use strict';
 
 const { Router }              = require('express');
 const { popLine, refillBucket, getPoolSizes, BEAT_TYPES } = require('../pool/narrativePool');
-const { generateWithFallback, FALLBACK_LINES }            = require('../pipeline/qualityCheck');
+const {
+  generateWithFallback,
+  FALLBACK_LINES,
+  generateRecapWithFallback,
+  FALLBACK_RECAP,
+} = require('../pipeline/qualityCheck');
 
 const router = Router();
 
@@ -90,6 +101,35 @@ router.post('/test-generate', async (req, res) => {
   const source = line === fallback ? 'fallback' : 'granite';
 
   return res.json({ beatType, line, source });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/narrative/recap
+// ---------------------------------------------------------------------------
+
+/**
+ * Generates a personalised session recap paragraph from the stats posted by
+ * the client. Unlike the beat-type endpoints, this is a direct synchronous
+ * generation call — no pool is involved because the recap only happens once
+ * per session and pre-generating it would waste tokens.
+ *
+ * The client sends the stats object assembled by buildRecapStats() in recap.js.
+ * We trust the shape but don't strictly validate each field — if a field is
+ * missing, buildRecapPrompt's defaults handle it gracefully.
+ */
+router.post('/recap', async (req, res) => {
+  const stats = req.body;
+
+  // Require at least some body content — an empty request is almost certainly
+  // a client bug (forgot to stringify the stats object).
+  if (!stats || typeof stats !== 'object' || Object.keys(stats).length === 0) {
+    return res.status(400).json({ error: 'Request body must be a non-empty stats object.' });
+  }
+
+  const recap  = await generateRecapWithFallback(stats);
+  const source = recap === FALLBACK_RECAP ? 'fallback' : 'granite';
+
+  return res.json({ recap, source });
 });
 
 module.exports = router;
