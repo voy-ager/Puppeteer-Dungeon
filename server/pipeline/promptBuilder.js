@@ -116,7 +116,7 @@ function buildPrompt(beatType, gameState) {
 // ---------------------------------------------------------------------------
 
 /**
- * RECAP_PREAMBLE — the system instruction for recap generation.
+ * RECAP_PREAMBLE — the system instruction for the 'escaped' recap.
  *
  * Kept separate from SYSTEM_PREAMBLE because the two outputs have fundamentally
  * different requirements: SYSTEM_PREAMBLE asks for one line under 25 words;
@@ -131,6 +131,23 @@ lazy shortcut. Write exactly ONE paragraph of approximately 80 to 120 words. \
 No quotation marks. No headings. No summary label. Begin with the word "You".`;
 
 /**
+ * CAUGHT_PREAMBLE — the system instruction for the 'caught' recap.
+ *
+ * Same length and format requirements as RECAP_PREAMBLE, but the emotional
+ * framing is inverted: this is a failure ending. The dungeon caught up. The
+ * narrative closes in. The tone is not relieved — it is the dread of something
+ * that was always going to happen. Still second person, still atmospheric,
+ * still no gore or graphic violence. The failure is felt, not shown.
+ */
+const CAUGHT_PREAMBLE = `You are writing a personalized narrative recap for a player who has just been \
+caught in a horror dungeon-crawl game. Write in second person ("You..."). The tone is atmospheric dread — \
+the feeling of a story that has reached its inevitable end, a place that was always going to claim you. \
+The dungeon caught up. Not violent, not graphic — psychological. The weight of inevitability. \
+Something patient finally closing the distance. Never describe gore or graphic violence. \
+Never use the word "darkness" as a lazy shortcut. Write exactly ONE paragraph of approximately \
+80 to 120 words. No quotation marks. No headings. No summary label. Begin with the word "You".`;
+
+/**
  * buildRecapPrompt — constructs a Granite prompt personalised to this session's stats.
  *
  * Stats with zero or empty values are omitted from the prompt so Granite is
@@ -139,7 +156,13 @@ No quotation marks. No headings. No summary label. Begin with the word "You".`;
  * instruction rather than raw JSON so the model can weave the numbers into
  * narrative rather than listing them.
  *
+ * The preamble branches on stats.outcome so the same context block drives two
+ * emotionally distinct tones without duplicating the stat-assembly logic. The
+ * 'escaped' preamble is reflective and atmospheric; the 'caught' preamble
+ * frames the same facts as the dungeon closing in.
+ *
  * @param {object} stats
+ * @param {'escaped'|'caught'} [stats.outcome='escaped'] - how the session ended
  * @param {number}   stats.totalDistance         - metres walked this session
  * @param {number}   stats.totalPlayTimeSeconds   - total elapsed seconds
  * @param {number}   stats.huntCount              - times the enemy hunted the player
@@ -153,6 +176,7 @@ No quotation marks. No headings. No summary label. Begin with the word "You".`;
  */
 function buildRecapPrompt(stats) {
   const {
+    outcome              = 'escaped',
     totalDistance        = 0,
     totalPlayTimeSeconds = 0,
     huntCount            = 0,
@@ -162,6 +186,10 @@ function buildRecapPrompt(stats) {
     sneakTimeSeconds     = 0,
     backtrackedRooms     = [],
   } = stats;
+
+  // Select preamble based on outcome. Both share identical context assembly
+  // below — the preamble is the only thing that changes between the two endings.
+  const preamble = outcome === 'caught' ? CAUGHT_PREAMBLE : RECAP_PREAMBLE;
 
   const minutes = Math.round(totalPlayTimeSeconds / 60);
 
@@ -225,7 +253,7 @@ function buildRecapPrompt(stats) {
     : 'The player moved through the dungeon without incident.';
 
   return [
-    RECAP_PREAMBLE,
+    preamble,
     '',
     'Session details:',
     contextBlock,

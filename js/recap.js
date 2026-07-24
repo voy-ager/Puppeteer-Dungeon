@@ -1,28 +1,32 @@
 /**
- * recap.js — Session recap overlay
+ * recap.js — Session endings: escaped and caught
  *
- * The one "keepable artifact" from a playthrough: a personalised paragraph
- * narrating what actually happened in this specific session. Triggered
- * automatically when the player reaches final_chamber, or manually at any
- * time by pressing R.
+ * This module handles both possible ending states for the session:
  *
- * This module is the only place that touches the recap overlay DOM. It owns:
- *   - Assembling the stats object from live telemetry and director state
- *   - Fetching the generated paragraph from the Narrative Engine backend
- *   - Displaying, loading-stating, and dismissing the overlay
+ *   'escaped' — player reaches final_chamber or presses R. Generates a
+ *   reflective recap paragraph. Dismissed by re-requesting pointer lock
+ *   so the player can keep exploring.
  *
- * Why does Game.state === 'recap' pause gameplay?
- * The recap is the culminating moment of the session. Having the enemy
- * continue moving while the player reads (and can't react because they've
- * exited pointer lock) would be disorienting and unfair. Setting state to
- * 'recap' gates out all gameplay updates in main.js's animate() loop, making
- * the pause authoritative rather than a flag that every system must remember
- * to check independently.
+ *   'caught' — enemy closed to within huntEndDistance during a hunt.
+ *   Generates a dread-toned capture paragraph. Dismissed with
+ *   location.reload() for a clean restart.
+ *
+ * Both outcomes share the same #recap-overlay element and the same
+ * POST /api/narrative/recap endpoint. The `outcome` field in the stats
+ * payload tells the backend which tone preamble to use.
+ *
+ * Why does setting Game.state = 'recap' / 'caught' pause gameplay?
+ * Both are terminal states. Having the enemy continue moving while the
+ * player reads (and can't react because pointer lock was released) would
+ * be disorienting. Setting Game.state directly — not via setGameState() —
+ * matches the same pattern used for 'recap': these are overlay states that
+ * own their own DOM and must not trigger start-overlay/crosshair side effects.
  *
  * Depends on:
  *   - NARRATIVE_API_BASE (defined in narrativeUI.js, loaded before this file)
  *   - Game.telemetry, Game.director, Game.elapsedTime (all available at runtime)
  *   - setGameState() (defined in gamestate.js, loaded before this file)
+ *   - pauseAudio(), playStinger(), stopHeartbeat() (defined in audio.js)
  *   - #recap-overlay DOM element (defined in index.html)
  */
 
@@ -39,17 +43,23 @@ Game.recap = {
 };
 
 // ---------------------------------------------------------------------------
-// Client-side fallback — shown only if the backend is completely unreachable.
-// This is intentionally different from the server's FALLBACK_RECAP: the
-// server fallback is "Granite failed but the server responded"; this fallback
-// is "the server itself couldn't be reached." The player must never see a
-// blank or broken screen at this specific moment.
+// Client-side fallbacks — shown only if the backend is completely unreachable.
+// These are intentionally different from the server's FALLBACK_RECAP /
+// FALLBACK_CAUGHT: those cover "Granite failed but the server responded";
+// these cover "the server itself couldn't be reached." There are two because
+// the two endings have different emotional tones — showing the escaped fallback
+// on a caught ending (or vice versa) would feel wrong and confusing.
 // ---------------------------------------------------------------------------
 
 const RECAP_CLIENT_FALLBACK =
   'You made it to the end. The dungeon watched every step — the hesitations, ' +
   'the choices, the moments you moved too quickly or waited too long. ' +
   'It remembers you passed through. That is enough.';
+
+const CAUGHT_CLIENT_FALLBACK =
+  'The dungeon finally closed the distance. It had been patient — more patient ' +
+  'than you. Every step you took, every sound you made, brought it closer. ' +
+  'This is where your path through the dark ends.';
 
 // ---------------------------------------------------------------------------
 // buildRecapStats — assembles the stats payload from live game state
@@ -62,9 +72,11 @@ const RECAP_CLIENT_FALLBACK =
  * All fields are always present — zero values are included and the backend's
  * buildRecapPrompt will simply omit them from the prompt naturally.
  *
+ * @param {'escaped'|'caught'} outcome - how the session ended; included in
+ *   the payload so the backend selects the correct tone preamble.
  * @returns {object} Stats payload ready for JSON serialisation.
  */
-function buildRecapStats() {
+function buildRecapStats(outcome) {
   const t = Game.telemetry;
   const d = Game.director;
 
@@ -78,6 +90,7 @@ function buildRecapStats() {
   );
 
   return {
+    outcome,
     totalDistance:         Math.round(t.totalDistance * 10) / 10,
     totalPlayTimeSeconds:  Math.round(Game.elapsedTime),
     huntCount:             d.huntCount             || 0,
@@ -138,12 +151,19 @@ function triggerRecap() {
   const overlay = Game.recap.element;
   if (!overlay) return;
 
+  // Remove the caught tint modifier in case the overlay was previously shown
+  // for a caught ending in the same session (defensive — reload resets this,
+  // but a manual R-press after a catch could theoretically reuse the element).
+  overlay.classList.remove('outcome-caught');
+
   // Unhide the overlay and show a loading state while the fetch runs.
   overlay.classList.remove('hidden');
   const textEl  = overlay.querySelector('.recap-text');
   const statsEl = overlay.querySelector('.recap-stats');
+  const hintEl  = overlay.querySelector('.recap-hint');
   if (textEl)  textEl.textContent  = 'The dungeon is remembering\u2026';
   if (statsEl) statsEl.textContent = '';
+  if (hintEl)  hintEl.textContent  = 'Click or press ESC to continue';
 
   // Exit pointer lock so the player can interact with the overlay normally.
   // Game.state is already 'recap', so the pointerlockchange listener in
@@ -151,7 +171,7 @@ function triggerRecap() {
   // will not reappear beneath the recap overlay.
   document.exitPointerLock();
 
-  const stats = buildRecapStats();
+  const stats = buildRecapStats('escaped');
 
   fetch(NARRATIVE_API_BASE + '/recap', {
     method:  'POST',
@@ -171,6 +191,76 @@ function triggerRecap() {
       // Log the error for debugging but never surface it to the player.
       console.warn('[Recap] fetch failed:', err.message);
       if (textEl)  textEl.textContent  = RECAP_CLIENT_FALLBACK;
+      if (statsEl) statsEl.textContent = formatStatsReadout(stats);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// triggerCapture — shows the caught ending overlay
+// ---------------------------------------------------------------------------
+
+/**
+ * Called by director.js when the enemy closes to within huntEndDistance
+ * during a hunt. Structurally parallel to triggerRecap(), but:
+ *   - Sets Game.state = 'caught' directly (same pattern as triggerRecap()
+ *     setting 'recap' — both are terminal overlay states that must NOT
+ *     trigger start-overlay/crosshair side effects via setGameState).
+ *   - Fires audio capture cues (stinger, stop heartbeat, pause audio).
+ *   - Adds the 'outcome-caught' CSS class for the subtle red tint.
+ *   - Dismiss action is location.reload() not requestPointerLock().
+ */
+function triggerCapture() {
+  if (Game.state === 'caught') return; // guard against double-trigger
+
+  // Set state FIRST — must happen before exitPointerLock() fires
+  // pointerlockchange, so main.js's listener sees 'caught' and does not
+  // call setGameState('paused'). Same critical ordering as triggerRecap().
+  Game.state = 'caught';
+
+  // Audio: fire the hunt-start stinger as a capture sting, then silence
+  // everything. The stinger fires synchronously before pauseAudio() so it
+  // has a brief window to start playing before the context is suspended.
+  playStinger();
+  stopHeartbeat();
+  pauseAudio();
+
+  // Release pointer lock so the overlay is fully interactive.
+  document.exitPointerLock();
+
+  const overlay = Game.recap.element;
+  if (!overlay) return;
+
+  // Apply the outcome-caught modifier class for the reddish tint.
+  // Removed by triggerRecap() if the overlay is ever reused in the same page
+  // load (defensive), but in practice a caught ending leads to location.reload().
+  overlay.classList.add('outcome-caught');
+  overlay.classList.remove('hidden');
+
+  const textEl  = overlay.querySelector('.recap-text');
+  const statsEl = overlay.querySelector('.recap-stats');
+  const hintEl  = overlay.querySelector('.recap-hint');
+  if (textEl)  textEl.textContent  = 'The dungeon closes in\u2026';
+  if (statsEl) statsEl.textContent = '';
+  if (hintEl)  hintEl.textContent  = 'Press R or click to try again';
+
+  const stats = buildRecapStats('caught');
+
+  fetch(NARRATIVE_API_BASE + '/recap', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(stats),
+  })
+    .then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then(data => {
+      if (textEl)  textEl.textContent  = data.recap  || CAUGHT_CLIENT_FALLBACK;
+      if (statsEl) statsEl.textContent = formatStatsReadout(stats);
+    })
+    .catch(err => {
+      console.warn('[Recap] capture fetch failed:', err.message);
+      if (textEl)  textEl.textContent  = CAUGHT_CLIENT_FALLBACK;
       if (statsEl) statsEl.textContent = formatStatsReadout(stats);
     });
 }
@@ -201,6 +291,22 @@ function dismissRecap() {
 }
 
 // ---------------------------------------------------------------------------
+// dismissCapture — ends the caught overlay with a full reload
+// ---------------------------------------------------------------------------
+
+function dismissCapture() {
+  if (Game.state !== 'caught') return;
+
+  // A full page reload is the deliberate reset strategy for the caught ending.
+  // Manually resetting every module (enemy position, director counters, telemetry
+  // totals, audio graph nodes, pool state) would be significant additional scope
+  // with real correctness risk — any forgotten reset would produce a corrupted
+  // second run. location.reload() is simpler and completely reliable. This is
+  // the right call for a hackathon timeline.
+  location.reload();
+}
+
+// ---------------------------------------------------------------------------
 // initRecap — called once at boot from main.js
 // ---------------------------------------------------------------------------
 
@@ -210,8 +316,15 @@ function initRecap() {
   const overlay = Game.recap.element;
   if (!overlay) return;
 
-  // Click anywhere on the overlay to dismiss.
-  overlay.addEventListener('click', dismissRecap);
+  // Delegating click handler — reads Game.state at click time so this single
+  // listener correctly handles both the 'recap' and 'caught' dismiss actions.
+  // Both dismiss functions guard on their own state, so only the matching one
+  // fires; calling both explicitly here would also be safe, but delegating is
+  // more readable.
+  overlay.addEventListener('click', () => {
+    if (Game.state === 'recap')  dismissRecap();
+    if (Game.state === 'caught') dismissCapture();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +344,11 @@ function checkRecapAutoTrigger() {
   if (
     Game.telemetry.currentRoom === 'final_chamber' &&
     !Game.recap.autoShown &&
-    Game.state !== 'recap'
+    Game.state !== 'recap' &&
+    // Also guard against 'caught': if the player somehow reached final_chamber
+    // during the same frame the enemy caught them, the capture takes priority.
+    // In practice these can't happen simultaneously, but the guard is cheap.
+    Game.state !== 'caught'
   ) {
     Game.recap.autoShown = true;
     triggerRecap();

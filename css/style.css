@@ -129,10 +129,11 @@ canvas {
 }
 
 /* ---------------------------------------------------------------------------
-   Recap overlay — session-end narrative panel
-   z-index 25: above game canvas and debug chrome, below nothing (start-overlay
-   at z-index 20 is explicitly hidden before recap is ever shown via the
-   !Game.recap.active guard in main.js pointerlockchange handler).
+   Recap overlay — session-end narrative panel (shared by both endings)
+   z-index 25: above game canvas and debug chrome. The start-overlay does not
+   reappear beneath it because triggerRecap/triggerCapture set Game.state
+   before calling exitPointerLock(), so main.js's pointerlockchange listener
+   skips the setGameState('paused') branch that would show the start-overlay.
    Uses the same opacity-fade .hidden pattern as #start-overlay so the overlay
    appears to materialise rather than snap in.
    --------------------------------------------------------------------------- */
@@ -151,6 +152,14 @@ canvas {
 #recap-overlay.hidden {
   opacity: 0;
   pointer-events: none;
+}
+
+/* outcome-caught modifier — applied by triggerCapture() for the caught ending.
+   A dark reddish background tint signals failure without being graphic or garish.
+   The tint is deliberately subtle (rgba ~40,0,0) so it reads as "wrong" rather
+   than "violent" — the game's horror is psychological, not visual shock. */
+#recap-overlay.outcome-caught {
+  background: rgba(40, 0, 0, 0.92);
 }
 
 /* Constrained inner card — centred, generous vertical padding */

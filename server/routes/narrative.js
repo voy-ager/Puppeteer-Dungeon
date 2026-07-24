@@ -24,10 +24,11 @@
  *     connection and prompt quality without waiting for the scheduler.
  *
  *   POST /api/narrative/recap
- *     Accepts a session stats object as JSON body and generates one
- *     personalised recap paragraph. Entirely separate from the pool/beat-type
- *     system — this is a single synchronous request made once per session
- *     when the player reaches the final room. Returns { recap, source }.
+ *     Accepts a session stats object as JSON body (including an `outcome`
+ *     field of 'escaped' | 'caught') and generates one personalised recap
+ *     paragraph. The `outcome` field is passed through unchanged to
+ *     buildRecapPrompt, which selects the correct tone preamble internally.
+ *     Entirely separate from the pool/beat-type system. Returns { recap, source }.
  */
 
 'use strict';
@@ -39,6 +40,7 @@ const {
   FALLBACK_LINES,
   generateRecapWithFallback,
   FALLBACK_RECAP,
+  FALLBACK_CAUGHT,
 } = require('../pipeline/qualityCheck');
 
 const router = Router();
@@ -113,9 +115,10 @@ router.post('/test-generate', async (req, res) => {
  * generation call — no pool is involved because the recap only happens once
  * per session and pre-generating it would waste tokens.
  *
- * The client sends the stats object assembled by buildRecapStats() in recap.js.
- * We trust the shape but don't strictly validate each field — if a field is
- * missing, buildRecapPrompt's defaults handle it gracefully.
+ * The client sends the stats object assembled by buildRecapStats() in recap.js,
+ * including an `outcome` field ('escaped' | 'caught') that selects the prompt
+ * preamble tone. This route passes stats through unchanged — the branching
+ * lives entirely in buildRecapPrompt, keeping this layer thin.
  */
 router.post('/recap', async (req, res) => {
   const stats = req.body;
@@ -127,7 +130,10 @@ router.post('/recap', async (req, res) => {
   }
 
   const recap  = await generateRecapWithFallback(stats);
-  const source = recap === FALLBACK_RECAP ? 'fallback' : 'granite';
+  // Detect fallback use by comparing against both possible hardcoded strings —
+  // the correct one was selected inside generateRecapWithFallback based on
+  // stats.outcome, so we check both here to keep 'source' accurate.
+  const source = (recap === FALLBACK_RECAP || recap === FALLBACK_CAUGHT) ? 'fallback' : 'granite';
 
   return res.json({ recap, source });
 });

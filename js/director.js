@@ -81,9 +81,34 @@ function updateDirector(delta) {
     const huntElapsed = Game.elapsedTime - d.huntStartTime;
     const caughtUp = t.enemyDistance !== null && t.enemyDistance < d.huntEndDistance;
 
-    if (huntElapsed > d.maxHuntDuration || caughtUp) {
+    // ---------------------------------------------------------------------------
+    // Core design change: proximity during a hunt is now the ACTUAL DANGER.
+    //
+    // Previously, both proximity (caughtUp) and timer expiry triggered endHunt(),
+    // making hunts consequence-free — the enemy could close to arm's reach and
+    // the player was simply "relieved". That removed all stakes from a chase.
+    //
+    // Now the two conditions have different meanings:
+    //   caughtUp → triggerCapture() — the enemy reached you; game over.
+    //   timer expired → endHunt()   — you outlasted the hunt; you survived.
+    //
+    // Physical proximity is the lethal condition. Outlasting the clock is how
+    // you escape. The game's tension is now real: closing the gap ends the session.
+    //
+    // caughtUp is checked first so that a frame where both are true (enemy close
+    // AND timer just expired) correctly resolves as capture, not relief.
+    // ---------------------------------------------------------------------------
+    if (caughtUp) {
+      triggerCapture();
+      // Return immediately — do NOT fall through to the drone update or
+      // heartbeat calls below. The capture flow handles its own audio.
+      return;
+    }
+
+    if (huntElapsed > d.maxHuntDuration) {
       endHunt();
     }
+
     // Update heartbeat tempo every frame while hunting — the new interval
     // takes effect on the next scheduleBeat() reschedule, so tempo changes
     // are smooth rather than mid-beat.

@@ -166,9 +166,9 @@ async function generateWithFallback(beatType, gameState) {
 // ---------------------------------------------------------------------------
 
 /**
- * FALLBACK_RECAP — hardcoded paragraph served when Granite fails twice for a
- * recap request. Written in the same second-person, atmospheric tone as
- * generated recaps so a fallback never feels like an error state.
+ * FALLBACK_RECAP — hardcoded paragraph served when Granite fails twice for an
+ * 'escaped' recap. Written in the same second-person, reflective-atmospheric
+ * tone as generated recaps so a fallback never feels like an error state.
  *
  * Generic by necessity (no session-specific numbers), but still evocative —
  * the player should feel the dungeon acknowledged them even if Granite was
@@ -179,6 +179,17 @@ your footsteps, your pauses, the moments you hesitated at a junction and chose w
 present the entire time — patient, unhurried, certain of its ground. Whether you moved quickly or \
 slowly, loudly or in near-silence, it watched. The dungeon does not forget the ones who walk its \
 halls. It simply waits for the next one.`;
+
+/**
+ * FALLBACK_CAUGHT — hardcoded paragraph served when Granite fails twice for a
+ * 'caught' recap. Mirrors FALLBACK_RECAP's purpose but with the inverted
+ * framing: the dungeon closed in, the narrative ended in failure. Still
+ * atmospheric, still no gore — psychological inevitability only.
+ */
+const FALLBACK_CAUGHT = `You stayed too long, moved too loudly, or simply ran out of room. The dungeon \
+was patient in a way you were not. It did not chase you — it simply waited at the right corner, in \
+the right silence, until the distance between you was nothing. The stone remembered every step you \
+took toward it. It always does. The ones who pass through leave something behind. You left more than most.`;
 
 /**
  * MAX_RECAP_WORD_COUNT — the upper bound for a valid recap paragraph.
@@ -248,6 +259,11 @@ function cleanAndValidateRecap(rawText) {
  * @returns {Promise<string>} Always resolves to a paragraph string.
  */
 async function generateRecapWithFallback(stats) {
+  // Select the correct fallback before the loop so both the warn log and the
+  // return value use the same tone-matched string. FALLBACK_CAUGHT is used
+  // when the session ended in capture; FALLBACK_RECAP for the escaped ending.
+  const fallback = (stats.outcome === 'caught') ? FALLBACK_CAUGHT : FALLBACK_RECAP;
+
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const prompt  = buildRecapPrompt(stats);
@@ -255,19 +271,19 @@ async function generateRecapWithFallback(stats) {
       const recap   = cleanAndValidateRecap(rawText);
 
       if (recap) {
-        console.log(`[qualityCheck] recap attempt ${attempt} OK (${recap.split(/\s+/).length} words)`);
+        console.log(`[qualityCheck] recap attempt ${attempt} OK [${stats.outcome || 'escaped'}] (${recap.split(/\s+/).length} words)`);
         return recap;
       }
 
-      console.warn(`[qualityCheck] recap attempt ${attempt} unusable — ${attempt < 2 ? 'retrying' : 'using fallback'}`);
+      console.warn(`[qualityCheck] recap attempt ${attempt} unusable [${stats.outcome || 'escaped'}] — ${attempt < 2 ? 'retrying' : 'using fallback'}`);
 
     } catch (err) {
-      console.warn(`[qualityCheck] recap attempt ${attempt} threw: ${err.message} — ${attempt < 2 ? 'retrying' : 'using fallback'}`);
+      console.warn(`[qualityCheck] recap attempt ${attempt} threw [${stats.outcome || 'escaped'}]: ${err.message} — ${attempt < 2 ? 'retrying' : 'using fallback'}`);
     }
   }
 
-  console.warn('[qualityCheck] Recap falling back to hardcoded paragraph');
-  return FALLBACK_RECAP;
+  console.warn(`[qualityCheck] Recap falling back to hardcoded paragraph [${stats.outcome || 'escaped'}]`);
+  return fallback;
 }
 
 module.exports = {
@@ -277,4 +293,5 @@ module.exports = {
   cleanAndValidateRecap,
   generateRecapWithFallback,
   FALLBACK_RECAP,
+  FALLBACK_CAUGHT,
 };

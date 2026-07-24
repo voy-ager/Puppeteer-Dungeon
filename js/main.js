@@ -89,16 +89,25 @@ window.addEventListener('DOMContentLoaded', () => {
       Game.director.enabled = !Game.director.enabled;
       console.log(`[Director] toggled ${Game.director.enabled ? 'ON' : 'OFF'}`);
     }
-    // 'R' manually triggers the recap at any time — useful for demo recordings
-    // and for testing the overlay without waiting for final_chamber.
+    // 'R' — context-sensitive: if caught, it's the "try again" restart key
+    // (matching the hint text set by triggerCapture). Otherwise it manually
+    // triggers the escaped recap — useful for demo recordings and for testing
+    // the overlay without walking to final_chamber.
     if (e.code === 'KeyR') {
-      triggerRecap();
+      if (Game.state === 'caught') {
+        dismissCapture();
+      } else {
+        triggerRecap();
+      }
     }
-    // ESC dismisses the recap overlay if it's showing. The browser also fires
-    // ESC to release pointer lock, which the pointerlockchange handler already
-    // handles; this ensures the overlay itself is hidden in the same keypress.
+    // ESC dismisses whichever ending overlay is currently showing.
+    // dismissRecap and dismissCapture each guard on their own state,
+    // so calling both is safe — only the one matching Game.state fires.
+    // The browser also fires ESC to release pointer lock; the pointerlockchange
+    // handler handles that separately, so these calls handle the overlay hide.
     if (e.code === 'Escape') {
       dismissRecap();
+      dismissCapture();
     }
   });
 
