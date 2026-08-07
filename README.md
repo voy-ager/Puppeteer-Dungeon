@@ -136,10 +136,6 @@ WATSONX_URL=https://us-south.ml.cloud.ibm.com   # or your region's endpoint
 | R | Manually trigger the end-of-session recap |
 | Esc | Pause |
 
-## Security
-
-No secrets are committed to this repository. The only credential in use (an IBM Cloud API key for watsonx.ai) lives in a local, git-ignored `.env` file. `.env.example` documents the required variable names with no real values. The client never calls watsonx.ai directly — all Granite requests are proxied through the backend, so no API key is ever exposed to the browser.
-
 ## Status
 
 All planned systems are complete and tested: dungeon, telemetry, Director escalation (comfort- and noise-based), narrative generation, capture/escape endings, NPC key and locked door, hiding, distraction, procedural audio, and the skeletal Mixamo enemy with corrected animation.
