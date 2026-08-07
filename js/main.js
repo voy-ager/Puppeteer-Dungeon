@@ -20,6 +20,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initTelemetry();
   initNarrativeUI();
   initHiding();
+  initDistraction();
   initRecap();
 
   const overlay = document.getElementById('start-overlay');
@@ -86,6 +87,11 @@ window.addEventListener('DOMContentLoaded', () => {
     if (e.code === 'KeyE') {
       toggleHiding();
     }
+    // 'Q' throws a distraction projectile in the camera's forward direction.
+    // throwDistraction() guards on Game.state and cooldown internally.
+    if (e.code === 'KeyQ') {
+      throwDistraction();
+    }
     // 'O' toggles the Director on/off for the demo comparison recording.
     // The enemy keeps its current state when toggled off — no forced reset —
     // so the "disabled" recording shows the raw baseline from that moment.
@@ -140,6 +146,8 @@ function animate() {
     updateEnemy(delta);
     updateNPC(delta);
     updateHiding(delta);
+    updateDistraction(delta);
+    updateDoorAnimation();
     renderDebugOverlay();
   }
 
@@ -151,4 +159,33 @@ function animate() {
   checkRecapAutoTrigger();
 
   Game.renderer.render(Game.scene, Game.camera);
+}
+
+/**
+ * updateDoorAnimation — time-based tween for the portcullis-style door rise.
+ *
+ * Called every frame inside the Game.state === 'playing' gate. The door only
+ * ever needs to play once per session (unlock is a one-way event), so this is
+ * a simple linear lerp rather than a physics simulation — appropriate for a
+ * single triggered animation with no looping or reversal requirement.
+ *
+ * Progress is computed from wall-clock elapsed time rather than accumulated
+ * delta so the animation is framerate-independent: a frame spike won't cause
+ * the door to stall mid-rise.
+ */
+function updateDoorAnimation() {
+  const anim = Game.doorAnimation;
+  if (!anim || !anim.active || !Game.lockedDoorMesh) return;
+
+  const elapsed  = Game.elapsedTime - anim.startTime;
+  const progress = Math.min(elapsed / anim.duration, 1); // clamp to [0, 1]
+
+  // Linear interpolation: y moves from startY (2.0) to targetY (7.2).
+  // A non-linear ease would feel marginally smoother, but linear is
+  // indistinguishable at 1.5s and keeps the code minimal.
+  Game.lockedDoorMesh.position.y = anim.startY + (anim.targetY - anim.startY) * progress;
+
+  if (progress >= 1) {
+    anim.active = false; // animation complete — stop checking every frame
+  }
 }

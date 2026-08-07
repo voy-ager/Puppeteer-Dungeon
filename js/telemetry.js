@@ -145,6 +145,19 @@ function updateTelemetry(delta) {
     const idx = Game.colliders.indexOf(Game.lockedDoorCollider);
     if (idx !== -1) Game.colliders.splice(idx, 1);
     Game.lockedDoorCollider = null; // prevent re-check on every frame
+
+    // Start the door-opening animation. The mesh lifts out of view like a
+    // portcullis: rising from its resting y-centre (WALL_HEIGHT/2 = 2.0) to
+    // well above the ceiling (WALL_HEIGHT * 1.8 = 7.2m) over 1.5 seconds.
+    // "Gate lifts up" is immediately readable as "the way is now open" without
+    // requiring hinge geometry, a door-swing arc, or a separate open state.
+    Game.doorAnimation = {
+      active:    true,
+      startY:    WALL_HEIGHT / 2,   // 2.0 — resting y-centre
+      targetY:   WALL_HEIGHT * 1.8, // 7.2 — above ceiling, disappears into fog
+      startTime: Game.elapsedTime,
+      duration:  1.5,               // seconds
+    };
   }
 
   // Door hint: show once when the player approaches the locked doorway (within
@@ -183,8 +196,9 @@ function renderDebugOverlay() {
     <div>enemy distance: ${enemyDist}</div>
     <div>close-call time: ${t.closeCallSeconds.toFixed(1)}s</div>
     <div style="margin-top:6px;">enemy state: <b>${Game.enemy.state}</b></div>
+    <div>investigating: ${Game.enemy.checkingSpot ? 'yes' : 'no'}</div>
     <div>director: <b>${Game.director.enabled ? 'ENABLED' : 'DISABLED'}</b></div>
     <div>last event: ${Game.director.lastEvent || '—'}</div>
-    <div style="opacity:0.5; margin-top:6px;">press T to hide · O to toggle director</div>
+    <div style="opacity:0.5; margin-top:6px;">press T to hide · O to toggle director · Q to throw</div>
   `;
 }

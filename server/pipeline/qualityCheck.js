@@ -229,6 +229,28 @@ function cleanAndValidateRecap(rawText) {
 
   if (!cleaned) return null;
 
+  // Leakage-phrase rejection: guard against the model echoing prompt
+  // instructions back instead of producing narrative. These exact phrases
+  // appear in the preamble as format directives — if any of them surface in
+  // the output, the model has regurgitated the prompt rather than followed it.
+  // Reject early (before the word-count check) so the retry has a chance to
+  // produce a clean paragraph rather than a word-count-valid but useless one.
+  const lower = cleaned.toLowerCase();
+  const leakagePhrases = [
+    'exactly one paragraph',
+    'words.',
+    'no quotation marks',
+    'no headings',
+    'no summary label',
+    'begin with the word',
+  ];
+  for (const phrase of leakagePhrases) {
+    if (lower.includes(phrase)) {
+      console.warn(`[qualityCheck] Recap rejected — prompt leakage detected ("${phrase}"): "${cleaned.slice(0, 60)}..."`);
+      return null;
+    }
+  }
+
   const wordCount = cleaned.split(/\s+/).filter(Boolean).length;
   if (wordCount > MAX_RECAP_WORD_COUNT) {
     console.warn(`[qualityCheck] Recap rejected — ${wordCount} words (max ${MAX_RECAP_WORD_COUNT})`);

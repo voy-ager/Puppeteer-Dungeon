@@ -51,7 +51,19 @@ function showNarrativeLine(beatType) {
     });
 }
 
-function displaySubtitle(text) {
+/**
+ * Displays a subtitle and removes it after `duration` milliseconds.
+ *
+ * The optional `duration` parameter lets callers extend the display time
+ * for especially important one-time messages — e.g. the key-pickup beat in
+ * npc.js uses 8000ms so the player has time to register the event. The
+ * default (5000ms) matches the original hardcoded value, so every existing
+ * call site that omits the parameter is unaffected.
+ *
+ * @param {string} text
+ * @param {number} [duration=5000]  Milliseconds before the subtitle fades out.
+ */
+function displaySubtitle(text, duration = 5000) {
   const el = Game.narrativeUI.element;
   if (!el) return;
 
@@ -62,5 +74,5 @@ function displaySubtitle(text) {
 
   Game.narrativeUI.hideTimeout = setTimeout(() => {
     el.classList.remove('visible');
-  }, 5000);
+  }, duration);
 }

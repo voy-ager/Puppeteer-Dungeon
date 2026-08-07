@@ -38,7 +38,7 @@
       <p class="tagline">The dungeon is watching you back.</p>
       <p class="instructions">
         Click to begin<br />
-        <span>WASD to move &middot; Mouse to look &middot; ESC to release cursor</span>
+        <span>WASD to move &middot; Mouse to look &middot; Q to throw a distraction &middot; ESC to release cursor</span>
       </p>
     </div>
   </div>
@@ -61,6 +61,7 @@
        dependency explicit, though both are just function definitions and the
        actual calls only happen inside the game loop after all scripts load. -->
   <script src="js/hiding.js"></script>
+  <script src="js/distraction.js"></script>
   <script src="js/narrativeUI.js"></script>
   <!-- recap.js after narrativeUI.js because it references the file-scope
        NARRATIVE_API_BASE constant that narrativeUI.js defines. Must be before

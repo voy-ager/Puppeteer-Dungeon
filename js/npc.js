@@ -220,35 +220,55 @@ function updateNPC(delta) {
   // motion rather than a rigid two-part block oscillating together.
   headGroup.rotation.z = Math.sin(t * 0.5 + 0.6) * NPC_IDLE_SWAY_AMP * 0.4;
 
-  // --- Proximity trigger ---
+  // --- Proximity ---
   const pos = Game.camera.position;
   const npcPos = npc.mesh.position;
   const npcDistance = Math.hypot(pos.x - npcPos.x, pos.z - npcPos.z);
 
-  // 4m trigger radius: close enough that the player clearly chose to approach,
-  // wide enough that they don't have to stand on the NPC's feet to hear it.
-  // 20s cooldown: long enough to avoid spam; short enough that the NPC still
-  // speaks at a few distinct moments during a typical playthrough of this room.
+  // ---------------------------------------------------------------------------
+  // Step 1: Key grant — independent check, runs every frame.
+  //
+  // This is intentionally NOT gated on the subtitle-visibility guard or the
+  // 20-second cooldown that controls ordinary NPC dialogue. The key is a
+  // one-time, progression-critical pickup: missing it means the player cannot
+  // open the locked door for the rest of the session with no retry path once
+  // they've moved past. Flavor dialogue can politely wait; this cannot.
+  //
+  // The most dangerous collision is a Director hunt_taunt line displaying while
+  // the player is fleeing through room_3 — exactly when they're most likely to
+  // pass the NPC quickly without lingering. If the subtitle guard were in place
+  // here, the key would silently fail to grant during that window.
+  //
+  // Calling displaySubtitle() here overrides whatever is currently showing.
+  // That override is deliberate: a critical one-time pickup message must always
+  // win over a currently-displaying flavor or hunt line.
+  //
+  // lastSpokenTime is NOT updated: no narrative line played this event, so the
+  // cooldown should not advance. The player's next eligible approach will still
+  // fire a real NPC dialogue line rather than burning the cooldown silently.
+  // ---------------------------------------------------------------------------
+  if (npcDistance < 4.0 && !Game.hasKey) {
+    Game.hasKey = true;
+    displaySubtitle('You found a key.', 8000);
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step 2: Ordinary NPC dialogue — gated on cooldown and subtitle guard.
+  //
+  // 4m trigger radius: close enough that the player clearly chose to approach.
+  // 20s cooldown: long enough to avoid spam; short enough to speak at a few
+  // distinct moments during a typical playthrough of this room.
   // Subtitle guard: skip this frame if something is already displaying — the
-  // proximity condition stays true and will retrigger as soon as the subtitle
-  // clears, without missing the moment or requiring any coordination state.
+  // proximity condition stays true and will retrigger as soon as it clears,
+  // without missing the moment or requiring any coordination state.
+  // ---------------------------------------------------------------------------
   if (
     npcDistance < 4.0 &&
     Game.elapsedTime - npc.lastSpokenTime > 20 &&
     Game.narrativeUI.element &&
     !Game.narrativeUI.element.classList.contains('visible')
   ) {
-    // Key grant — fires exactly once, on the first proximity event.
-    // Guard on !Game.hasKey so subsequent proximity triggers (the NPC still
-    // speaks on the normal 20s cooldown) don't re-grant or re-show the message.
-    // The displaySubtitle call happens regardless of subtitle visibility — the
-    // key pickup is a one-time story beat that should always show, not be
-    // suppressed because another subtitle happened to be fading.
-    if (!Game.hasKey) {
-      Game.hasKey = true;
-      displaySubtitle('You found a key.');
-    }
-
     // Choose beat type using the same telemetry signals the Director uses,
     // so the NPC's line always fits the current dramatic moment. The NPC
     // never decides to escalate — it only reflects what's already happening.

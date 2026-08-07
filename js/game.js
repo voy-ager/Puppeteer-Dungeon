@@ -107,28 +107,49 @@ function buildDungeon() {
 
   buildRoomShell(0, -39, 9, 9, { south: { width: doorWidth, center: 0 } }, 'final_chamber');
 
-  // --- Locked door collider ---
-  // final_chamber's south wall is the x-axis wall at z = -34.5
-  // (cz + halfZ = -39 + 4.5). buildWallRun leaves a gap x∈[-1.5, 1.5] for
-  // the door. This collider fills exactly that gap, blocking movement until
-  // the player obtains the key from the NPC.
+  // --- Locked door collider + mesh ---
+  // final_chamber's south wall is at z = -34.5 (cz + halfZ = -39 + 4.5).
+  // buildWallRun leaves a gap x∈[-1.5, 1.5] for the doorway.
   //
-  // Stored as a named reference on Game rather than pushed anonymously, so
-  // telemetry.js can splice it out of Game.colliders by reference when the
-  // player picks up the key.
-  //
-  // No visual mesh is added — the invisible blocker is intentional. The hint
-  // text ("The way is sealed…") tells the player something is there; the
-  // environment itself provides no visible wall to remove expectations about
-  // what will happen when the key is acquired.
+  // The collider blocks movement; the mesh makes the barrier visible. They are
+  // kept as separate objects so telemetry.js can splice out the collider for
+  // collision while main.js animates the mesh independently (portcullis rise).
   Game.hasKey = false;
+
+  // Collider is intentionally THICKER than WALL_THICKNESS (0.3m).
+  // Max single-frame player movement is speed(4.5) * maxDelta(0.1) = 0.45m,
+  // which exceeds the 0.15m half-depth of a standard wall. 1.5m thickness
+  // (0.75m half-depth) cannot be tunneled through in a single frame at any speed.
   Game.lockedDoorCollider = {
     minX: -1.5,
     maxX:  1.5,
-    minZ: -34.5 - WALL_THICKNESS / 2, // -34.65
-    maxZ: -34.5 + WALL_THICKNESS / 2, // -34.35
+    minZ: -34.5 - 0.75, // -35.25
+    maxZ: -34.5 + 0.75, // -33.75
   };
   Game.colliders.push(Game.lockedDoorCollider);
+
+  // Door mesh: 3m wide (matching the gap), WALL_HEIGHT tall, 1.5m deep
+  // (matching the collider thickness). Dark reddish-brown material (0x2a1f18)
+  // reads as wood/iron rather than the stone-grey walls — visually distinct
+  // enough to register as "a door" without being cartoonish. y-centre at
+  // WALL_HEIGHT/2 follows the same convention as addWallSegment(): mesh
+  // centred at half-height so the bottom sits flush with the floor plane.
+  const doorMaterial = new THREE.MeshStandardMaterial({
+    color: 0x2a1f18,
+    roughness: 0.85,
+  });
+  Game.lockedDoorMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(3, WALL_HEIGHT, 1.5),
+    doorMaterial
+  );
+  Game.lockedDoorMesh.position.set(0, WALL_HEIGHT / 2, -34.5);
+  Game.lockedDoorMesh.castShadow    = true;
+  Game.lockedDoorMesh.receiveShadow = true;
+  Game.scene.add(Game.lockedDoorMesh);
+
+  // Animation descriptor — starts inactive; telemetry.js populates the fields
+  // when the key is obtained and the collider is removed.
+  Game.doorAnimation = { active: false };
 
   const crate = new THREE.Mesh(
     new THREE.BoxGeometry(1, 1, 1),

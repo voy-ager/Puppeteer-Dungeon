@@ -148,6 +148,17 @@ function triggerRecap() {
   // 'playing') and correctly skips the setGameState('paused') branch.
   setGameState('recap');
 
+  // Objective complete — permanently disable the Director for this session.
+  // There is no reason for continued escalation once the player has escaped:
+  // the hunt system exists to create tension while the goal is unachieved.
+  // Leaving it enabled would let the enemy trigger a capture notification
+  // while the recap overlay is showing, which is both confusing and unfair.
+  // This only applies to the 'escaped' path — the 'caught' path already
+  // calls location.reload() via dismissCapture(), which resets everything.
+  if (Game.director) {
+    Game.director.enabled = false;
+  }
+
   const overlay = Game.recap.element;
   if (!overlay) return;
 

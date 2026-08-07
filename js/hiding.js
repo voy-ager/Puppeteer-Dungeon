@@ -38,8 +38,10 @@
 // ---------------------------------------------------------------------------
 
 Game.hiding = {
-  active: false, // true while the player is crouched in a hiding spot
-  spots:  [],    // array of { position: THREE.Vector3, radius: number }
+  active:       false, // true while the player is crouched in a hiding spot
+  spots:        [],    // array of { position: THREE.Vector3, radius: number }
+  lastSpotUsed: null,  // reference to the spot object most recently entered;
+                       // read by enemy.js to know which spot to occasionally detour to
 };
 
 // ---------------------------------------------------------------------------
@@ -58,18 +60,20 @@ let _lastHidingHint = null;
 
 function initHiding() {
   // --- Spot definitions ---
-  // Spot 1: room_2 (X[-4,4], Z[-19,-11]), west wall, z=-16.
-  //   Enemy patrol waypoints cover x∈[-3,3], z∈[-18.5,-15].
-  //   x=-2, z=-16 is clear of all waypoints (nearest is (-3,-15), ~1.4m away).
+  // Spot 1: room_2 (X[-4,4], Z[-19,-11]), northeast corner at (3.5, 0, -12).
+  //   Enemy patrol waypoints form a rectangle x∈[-3,3], z∈[-18.5,-15].
+  //   (3.5,-12) is clearly outside that rectangle — nearest waypoint segment
+  //   is the east side at x=3, z=-15 to z=-18.5; distance from (3.5,-12) to
+  //   the nearest point on that segment is ~3m. Far enough to feel safe.
+  //   Previous position (-2,-16) was only ~1m from the patrol path and felt
+  //   unsafe despite being technically valid; this position is unambiguous.
   //
-  // Spot 2: room_3 (X[-4,4], Z[-31,-23]), west wall, z=-28.
-  //   NPC is at (2,0,-26). x=-2, z=-28 is ~4.5m from the NPC — outside
-  //   the NPC's 4m proximity trigger, so the NPC won't fire immediately
-  //   when the player enters the hiding spot.
+  // Spot 2: room_3 (X[-4,4], Z[-31,-23]), west wall at (-2, 0, -28).
+  //   NPC is at (2,0,-26). Distance ~4.5m — outside the NPC's 4m radius.
 
   const spotDefs = [
-    { x: -2, z: -16 }, // room_2 west alcove
-    { x: -2, z: -28 }, // room_3 west alcove
+    { x: 3.5, z: -12 }, // room_2 northeast alcove
+    { x: -2,  z: -28 }, // room_3 west alcove
   ];
 
   const RADIUS = 1.5; // metres — comfortable but not enormous
@@ -96,7 +100,9 @@ function initHiding() {
     marker.receiveShadow = true;
     Game.scene.add(marker);
 
-    Game.hiding.spots.push({ position: pos, radius: RADIUS });
+    // Store marker on the spot object so it can be repositioned or toggled
+    // in future if needed (not currently used, but costs nothing to keep).
+    Game.hiding.spots.push({ position: pos, radius: RADIUS, marker });
   }
 }
 
@@ -174,6 +180,11 @@ function toggleHiding() {
     const dist = Math.hypot(pos.x - spot.position.x, pos.z - spot.position.z);
     if (dist < spot.radius) {
       Game.hiding.active = true;
+
+      // Record which spot was used — enemy.js reads this to decide whether
+      // to detour and investigate. Updated every time the player enters so
+      // the enemy always targets the most recently used spot.
+      Game.hiding.lastSpotUsed = spot;
 
       // If a hunt is in progress, the player successfully evaded by hiding.
       // endHunt() handles all consequences: enemy back to patrol, cooldown set,

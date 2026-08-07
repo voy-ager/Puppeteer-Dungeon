@@ -127,8 +127,8 @@ const RECAP_PREAMBLE = `You are writing a personalized narrative recap for a pla
 a horror dungeon-crawl game. Write in second person ("You..."). The tone is the same atmospheric dread \
 and isolation as the rest of the game — cold stone, something watching, the weight of passing through \
 a place that remembers you. Never describe gore or graphic violence. Never use the word "darkness" as a \
-lazy shortcut. Write exactly ONE paragraph of approximately 80 to 120 words. \
-No quotation marks. No headings. No summary label. Begin with the word "You".`;
+lazy shortcut. The response should be a single flowing paragraph, roughly 80 to 120 words long, \
+delivered without quotation marks, headings, or labels of any kind, beginning with the word "You".`;
 
 /**
  * CAUGHT_PREAMBLE — the system instruction for the 'caught' recap.
@@ -144,8 +144,9 @@ caught in a horror dungeon-crawl game. Write in second person ("You..."). The to
 the feeling of a story that has reached its inevitable end, a place that was always going to claim you. \
 The dungeon caught up. Not violent, not graphic — psychological. The weight of inevitability. \
 Something patient finally closing the distance. Never describe gore or graphic violence. \
-Never use the word "darkness" as a lazy shortcut. Write exactly ONE paragraph of approximately \
-80 to 120 words. No quotation marks. No headings. No summary label. Begin with the word "You".`;
+Never use the word "darkness" as a lazy shortcut. The response should be a single flowing paragraph, \
+roughly 80 to 120 words long, delivered without quotation marks, headings, or labels of any kind, \
+beginning with the word "You".`;
 
 /**
  * buildRecapPrompt — constructs a Granite prompt personalised to this session's stats.
@@ -258,7 +259,7 @@ function buildRecapPrompt(stats) {
     'Session details:',
     contextBlock,
     '',
-    'Write the paragraph now. No quotation marks. No headings. No summary label. Begin with "You".',
+    'Write the recap paragraph now, beginning with "You".',
   ].join('\n');
 }
 

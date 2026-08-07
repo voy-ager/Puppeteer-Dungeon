@@ -36,8 +36,8 @@ Game.director = {
   huntStartTime: 0,
   maxHuntDuration: 12,
   huntEndDistance: 1.2,
-  reliefDuration: 15,
-  idleStreakThreshold: 6,
+  reliefDuration: 20,        // increased from 15 — longer guaranteed calm after a hunt
+  idleStreakThreshold: 7,    // tuned down from 9 — 7s idle is enough signal without being hair-trigger
   safeEscalationDistance: 4, // comfort-based escalation won't fire closer than this
   lastEvent: null,
 
@@ -50,10 +50,11 @@ Game.director = {
   // outranges the "too close to safely escalate" check — being heard when the
   // enemy is 3m away is a fair consequence of making noise, not an ambush.
   hearingRadius: 7,
-  // At noiseTriggerThreshold 0.6, a sprinting player (~noiseLevel 0.9) always
-  // triggers it; a walking player (~0.5) stays just below it; sneaking (0)
-  // never triggers it. Tuned to make the choice feel meaningful, not punishing.
-  noiseTriggerThreshold: 0.6,
+  // At noiseTriggerThreshold 0.7, a sprinting player (~noiseLevel 0.9) still
+  // triggers it; a walking player (~0.5) stays safely below it; sneaking (0)
+  // never triggers it. Raised from 0.6 to give slightly more forgiveness to
+  // normal walking pace without removing the sprint-is-dangerous dynamic.
+  noiseTriggerThreshold: 0.65,
 
   // --- Recap stats counters ---
   // Lifetime totals used to personalise the recap paragraph at session end.
@@ -156,7 +157,13 @@ function updateDirector(delta) {
   // like a punishment loop.
   // This is entirely independent of the comfort-based check below — two
   // different reasons a hunt can start, both converging on startHunt().
+  //
+  // Grace period: no escalation in the first 20 seconds of the session.
+  // The player starts in entry_hall and needs time to get oriented before
+  // any hunt can fire. Using Game.elapsedTime directly is the simplest
+  // approach — no separate sessionStartTime field needed.
   if (
+    Game.elapsedTime >= 10 &&
     Game.elapsedTime >= d.huntCooldownUntil &&
     t.enemyDistance !== null &&
     t.enemyDistance < d.hearingRadius &&
@@ -193,6 +200,10 @@ function updateDirector(delta) {
   }
 
   if (Game.elapsedTime < d.huntCooldownUntil) return;
+
+  // Grace period guard for comfort-based escalation — mirrors the noise
+  // pathway above. Neither path can trigger a hunt in the first 10 seconds.
+  if (Game.elapsedTime < 10) return;
 
   const playerSeemsComfortable =
     t.idleStreak > d.idleStreakThreshold || isBacktracking();

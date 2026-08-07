@@ -36,6 +36,17 @@ Game.enemy = {
   limbRefs: null,         // named references to every animated Group, populated in
                           // initEnemy() so updateWalkAnimation() reaches them in O(1)
                           // without traversing the scene graph each frame
+
+  // --- Hiding-spot investigation ---
+  // The enemy occasionally detours during patrol to check the last spot the
+  // player hid in. This is deliberately probabilistic and infrequent — hiding
+  // remains the player's reliable safe option, but reusing the same spot
+  // repeatedly carries a small, growing risk of being found.
+  checkingSpot:    null, // spot object (from Game.hiding.spots) currently being investigated;
+                         // null during normal patrol, set when a detour begins
+  nextSpotCheckTime: 0,  // Game.elapsedTime value after which the next roll is permitted;
+                         // advanced 60–120s each time a roll is made (win or lose) so
+                         // checks are always rare — not every patrol loop
 };
 
 // ---------------------------------------------------------------------------
@@ -202,6 +213,32 @@ function updateEnemy(delta) {
   if (enemy.state === 'hunt') {
     huntTowardPlayer(delta);
   } else {
+    // --- Hiding-spot investigation roll ---
+    // Only during patrol (never during hunt) and only when there is a known
+    // last-used hiding spot. The roll fires at most once per 60–120s window,
+    // regardless of outcome, so the player can never be pressured by rapid
+    // successive checks. A 35% chance per window means roughly one in three
+    // windows results in a detour — infrequent enough that hiding is still
+    // reliable, but meaningful enough that repeated use of the same spot
+    // creates genuine risk over time.
+    if (
+      Game.hiding &&
+      Game.hiding.lastSpotUsed !== null &&
+      Game.elapsedTime > enemy.nextSpotCheckTime
+    ) {
+      // Advance the window regardless of whether the roll succeeds — this
+      // is the load-bearing decision that keeps checks infrequent. If we only
+      // advanced on a failed roll, a run of successes would produce a burst
+      // of consecutive checks that would feel punishing, not atmospheric.
+      enemy.nextSpotCheckTime = Game.elapsedTime + 60 + Math.random() * 60;
+
+      if (Math.random() < 0.35) {
+        // 35% chance: begin a detour to the last-used hiding spot.
+        enemy.checkingSpot = Game.hiding.lastSpotUsed;
+        console.log('[Enemy] detour: investigating last hiding spot');
+      }
+    }
+
     patrolWaypoints(delta);
   }
 
@@ -214,6 +251,57 @@ function patrolWaypoints(delta) {
   const enemy = Game.enemy;
   if (enemy.waypoints.length === 0) return;
 
+  // --- Hiding-spot detour branch ---
+  // When checkingSpot is set, the enemy temporarily ignores its waypoint list
+  // and moves toward the last hiding spot the player used. This reuses the
+  // same movement math as normal waypoint following — identical step/direction
+  // calculation, just with a different target position.
+  if (enemy.checkingSpot) {
+    const spotPos = enemy.checkingSpot.position;
+    const pos     = enemy.mesh.position;
+
+    const dx   = spotPos.x - pos.x;
+    const dz   = spotPos.z - pos.z;
+    const dist = Math.hypot(dx, dz);
+
+    if (dist > 0.01) {
+      const step = Math.min(enemy.speed * delta, dist);
+      pos.x += (dx / dist) * step;
+      pos.z += (dz / dist) * step;
+      enemy.mesh.rotation.y = Math.atan2(dx, dz);
+    }
+
+    // When the enemy arrives within ~0.5m, the investigation is complete.
+    // Clear checkingSpot and resume normal patrol from wherever
+    // currentWaypointIndex left off — no reset to index 0 so the patrol loop
+    // doesn't visibly teleport back to its starting point.
+    if (dist < 0.5) {
+      // Check for capture BEFORE clearing checkingSpot, since the condition
+      // requires the specific spot reference to match.
+      //
+      // Capture condition: the enemy reached the spot, the player is currently
+      // hiding (Game.hiding.active), AND the player is hiding in THIS specific
+      // spot (object reference equality — not any spot, only the one the enemy
+      // investigated). If all three are true, call triggerCapture() from recap.js.
+      //
+      // Why reference equality? If the player is hiding in spot B while the
+      // enemy investigates spot A, they should be safe — the enemy didn't find
+      // them. Using === on the spot object is the exact right check.
+      if (
+        Game.hiding &&
+        Game.hiding.active &&
+        Game.hiding.lastSpotUsed === enemy.checkingSpot
+      ) {
+        triggerCapture();
+      }
+
+      enemy.checkingSpot = null; // investigation over — resume normal patrol
+    }
+
+    return; // skip normal waypoint logic this frame
+  }
+
+  // --- Normal waypoint patrol ---
   const target = enemy.waypoints[enemy.currentWaypointIndex];
   const pos = enemy.mesh.position;
 

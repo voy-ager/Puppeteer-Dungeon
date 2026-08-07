@@ -10,11 +10,8 @@
  *   'playing' — pointer lock held, all gameplay systems active
  *   'paused'  — pointer lock released by the player (ESC), start overlay
  *               re-shown as the resume prompt
- *   'recap'   — recap overlay is showing; gameplay and audio paused
- *
- * Future states (not yet implemented):
- *   'caught'   — enemy reached the player; game-over overlay
- *   'escaped'  — player completed the escape sequence; victory overlay
+ *   'recap'   — escaped ending overlay is showing; dismiss re-locks and resumes
+ *   'caught'  — caught ending overlay is showing; dismiss reloads the page
  *
  * Why centralise this here?
  * Previously, controls.js and main.js each listened to 'pointerlockchange'
@@ -52,7 +49,7 @@ Game.state = 'title';
  * future 'caught'/'escaped') are intentionally left alone here: those modules
  * own their own DOM and must never have start-overlay shown beneath them.
  *
- * @param {string} newState — one of 'title' | 'playing' | 'paused' | 'recap'
+ * @param {string} newState — one of 'title' | 'playing' | 'paused' | 'recap' | 'caught'
  */
 function setGameState(newState) {
   Game.state = newState;
