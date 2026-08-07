@@ -46,6 +46,16 @@
   <!-- Three.js core (r128, UMD build — no build step required) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
+  <!-- fflate — required by FBXLoader for binary FBX decompression.
+       Must precede FBXLoader.js or the loader throws on construction. -->
+  <script src="https://unpkg.com/fflate@0.6.9/umd/index.js"></script>
+
+  <!-- FBXLoader — must follow three.min.js + fflate (depends on both) and precede
+       any game script that calls new THREE.FBXLoader().
+       cdnjs does not host the r128 examples/js build, so the unpkg mirror is used instead.
+       Load order: three.min.js → fflate → FBXLoader → game.js → (rest unchanged) -->
+  <script src="https://unpkg.com/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
+
   <!-- Our game code, order matters: game sets up the scene, controls handles input, main runs the loop -->
   <script src="js/game.js"></script>
   <script src="js/controls.js"></script>

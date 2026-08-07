@@ -1,196 +1,77 @@
 /**
- * enemy.js — Week 2, Days 10-11 scope
+ * enemy.js — FBX skeletal model, Mixamo animations
  *
- * Movement now branches on enemy.state:
- *   - 'patrol' : the same fixed waypoint loop from Days 4-5
- *   - 'hunt'   : moves directly toward the player's current position,
- *                faster than patrol speed
+ * Movement logic (patrolWaypoints, huntTowardPlayer, checkingSpot detour)
+ * is completely unchanged from the procedural-rig version — director.js,
+ * hiding.js, and distraction.js all interact only with Game.enemy.state,
+ * Game.enemy.checkingSpot, and Game.enemy.mesh.position, none of which
+ * change meaning with a skeletal model.
  *
- * Important design choice: enemy.js still owns all movement logic.
- * director.js only ever flips enemy.state — it never touches position
- * directly. That separation is what keeps the Director "just a decision
- * maker" instead of a tangle of movement code spread across two files.
- *
- * Visual rework (Days 12+):
- * The placeholder cylinder+sphere is replaced with a humanoid rig built
- * from Group hierarchies and primitive geometries. The rig is intentionally
- * "wrong" in three specific ways — see updateWalkAnimation() for the full
- * rationale. The movement functions (patrolWaypoints, huntTowardPlayer) are
- * completely unchanged; this file only changes what the mesh looks like and
- * how its limbs move.
+ * What changed:
+ *   - initEnemy() is now partially async: waypoints/speed/state are set
+ *     synchronously as before; mesh construction is replaced with an
+ *     FBXLoader call that resolves within a second but not instantly.
+ *   - updateWalkAnimation() (procedural limb rotations) is replaced by
+ *     updateEnemyAnimation() (AnimationMixer crossfades between four
+ *     baked Mixamo clips: idle, walk, run, crawl).
+ *   - patrolWaypoints() and huntTowardPlayer() now have `if (!enemy.mesh)`
+ *     early guards to handle the brief window before the async load resolves.
+ *     updateEnemy() already had this guard; the others now match.
  */
 
+// ---------------------------------------------------------------------------
+// Game.enemy — state object
+// ---------------------------------------------------------------------------
+
 Game.enemy = {
-  mesh: null,
+  mesh:  null,    // THREE.Group — null until FBX load resolves
+  state: 'patrol',            // 'patrol' | 'hunt' — set by director.js
+  speed: 1.4,                 // patrol speed, m/s
+  huntSpeedMultiplier: 1.8,   // hunt speed = speed * this
   waypoints: [],
   currentWaypointIndex: 0,
-  speed: 1.4,             // patrol speed, m/s
-  huntSpeedMultiplier: 1.8, // hunt speed = speed * this
-  state: 'patrol',        // 'patrol' | 'hunt' — set by director.js
 
-  // --- Animation state ---
-  walkPhase: 0,           // phase accumulator for the walk cycle; advances while moving,
-                          // frozen while idle so the idle sway can use a separate clock
-  lastPosition: null,     // THREE.Vector3 snapshot from last frame; used to derive
-                          // per-frame velocity without needing a separate speed variable
-  limbRefs: null,         // named references to every animated Group, populated in
-                          // initEnemy() so updateWalkAnimation() reaches them in O(1)
-                          // without traversing the scene graph each frame
+  // --- Skeletal animation ---
+  mixer:               null,  // THREE.AnimationMixer, created after idle.fbx loads
+  animations:          {},    // { idle, walk, run, crawl } — AnimationAction refs
+  currentAnimationName: null, // name of the currently-playing action (string)
+  stillTime:           0,     // seconds of continuous near-zero movement this session;
+                               // reset to 0 the moment the enemy moves, incremented each
+                               // frame it doesn't. 'idle' is only selected after this
+                               // exceeds 0.2s so single skipped frames at waypoint turns
+                               // don't produce a false walk→idle→walk blip.
 
-  // --- Hiding-spot investigation ---
-  // The enemy occasionally detours during patrol to check the last spot the
-  // player hid in. This is deliberately probabilistic and infrequent — hiding
-  // remains the player's reliable safe option, but reusing the same spot
-  // repeatedly carries a small, growing risk of being found.
-  checkingSpot:    null, // spot object (from Game.hiding.spots) currently being investigated;
-                         // null during normal patrol, set when a detour begins
-  nextSpotCheckTime: 0,  // Game.elapsedTime value after which the next roll is permitted;
-                         // advanced 60–120s each time a roll is made (win or lose) so
-                         // checks are always rare — not every patrol loop
+  // --- Hiding-spot / distraction investigation ---
+  // checkingSpot is set either by the passive 35% patrol roll (enemy.js) or
+  // by throwDistraction() (distraction.js). patrolWaypoints() handles both
+  // identically — it only reads checkingSpot.position and doesn't care about
+  // the object's origin.
+  checkingSpot:    null,
+  nextSpotCheckTime: 0,
 };
 
 // ---------------------------------------------------------------------------
-// Rig geometry constants — kept at the top so proportions are easy to adjust
-// without hunting through the construction code below.
+// initEnemy — synchronous setup + async FBX load
 // ---------------------------------------------------------------------------
 
-const TORSO_W = 0.5, TORSO_H = 0.9, TORSO_D = 0.3;
-const HEAD_R   = 0.22;
-const ARM_R    = 0.06, ARM_LEN  = 1.0;  // arms are deliberately longer than
-                                         // the torso (1.0 vs 0.9) — one wrong
-                                         // proportion that reads as "not quite human"
-const LEG_R    = 0.09, LEG_LEN  = 0.9;
-
-// Shoulder and hip x-offsets from the body centre-line
-const SHOULDER_X = 0.35;
-const HIP_X      = 0.15;
-
+/**
+ * Sets up all non-visual enemy state synchronously (waypoints, speed, etc.),
+ * then starts an async FBX load chain for the mesh and animations.
+ *
+ * Load order:
+ *   1. idle.fbx  — provides the character mesh, skeleton, and idle clip.
+ *                  All subsequent loaders reuse this same skeleton via the
+ *                  shared AnimationMixer, which is why idle.fbx must come first.
+ *   2. walking.fbx, running.fbx, crawling.fbx — loaded after the mixer
+ *      exists. Only animations[0] is extracted from each; the duplicate
+ *      mesh/skeleton data in these files is ignored.
+ *
+ * The game loop's `if (!enemy.mesh) return` guards in updateEnemy(),
+ * patrolWaypoints(), and huntTowardPlayer() safely skip all movement and
+ * animation logic during this brief window (typically < 1 second).
+ */
 function initEnemy() {
-  // Single material instance shared by every mesh on the rig — same spec as
-  // the original placeholder so the enemy's appearance doesn't change in
-  // colour or finish, only in silhouette.
-  const material = new THREE.MeshStandardMaterial({ color: 0x0a0a0c, roughness: 0.95 });
-
-  // --- Torso ---
-  const torsoMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(TORSO_W, TORSO_H, TORSO_D),
-    material
-  );
-  // Offset upward by half the torso height so the bottom of the torso sits
-  // at the hip line (y=0 within the body group) rather than centring on it.
-  torsoMesh.position.y = TORSO_H / 2;
-  torsoMesh.castShadow = true;
-
-  // --- Head ---
-  // headGroup is the pivot point at the top of the torso. The mesh is then
-  // offset upward by its own radius so the bottom of the head sphere sits at
-  // the pivot rather than the centre — this makes headGroup rotation feel
-  // like a natural neck pivot.
-  const headGroup = new THREE.Group();
-  headGroup.position.y = TORSO_H; // top of torso
-
-  const headMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(HEAD_R, 10, 8),
-    material
-  );
-  headMesh.position.y = HEAD_R;
-  headMesh.castShadow = true;
-
-  // Permanent tilt — rotation.z is set once here and never touched again by
-  // the animation code. A fixed asymmetry at rest is more unsettling than a
-  // symmetrical posture: it implies the figure was built slightly wrong, or
-  // damaged, rather than just animated badly.
-  headMesh.rotation.z = 0.15;
-
-  headGroup.add(headMesh);
-
-  // --- Left arm ---
-  // The shoulder Group is the pivot point at shoulder height. The cylinder
-  // mesh is offset downward by half its length so the TOP of the cylinder
-  // sits at the pivot — rotating the group then swings the arm correctly
-  // from the shoulder rather than rotating about its own centre.
-  const leftShoulderGroup = new THREE.Group();
-  leftShoulderGroup.position.set(-SHOULDER_X, TORSO_H * 0.88, 0);
-
-  const leftArmMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(ARM_R, ARM_R, ARM_LEN, 6),
-    material
-  );
-  leftArmMesh.position.y = -(ARM_LEN / 2);
-  leftArmMesh.castShadow = true;
-  leftShoulderGroup.add(leftArmMesh);
-
-  // --- Right arm ---
-  const rightShoulderGroup = new THREE.Group();
-  rightShoulderGroup.position.set(SHOULDER_X, TORSO_H * 0.88, 0);
-
-  const rightArmMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(ARM_R, ARM_R, ARM_LEN, 6),
-    material
-  );
-  rightArmMesh.position.y = -(ARM_LEN / 2);
-  rightArmMesh.castShadow = true;
-  rightShoulderGroup.add(rightArmMesh);
-
-  // --- Left leg ---
-  // Same pivot-at-joint pattern: hip Group at y=0 (the hip line within the
-  // body group), leg mesh offset downward so it hangs from the hip.
-  const leftHipGroup = new THREE.Group();
-  leftHipGroup.position.set(-HIP_X, 0, 0);
-
-  const leftLegMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(LEG_R, LEG_R, LEG_LEN, 6),
-    material
-  );
-  leftLegMesh.position.y = -(LEG_LEN / 2);
-  leftLegMesh.castShadow = true;
-  leftHipGroup.add(leftLegMesh);
-
-  // --- Right leg ---
-  const rightHipGroup = new THREE.Group();
-  rightHipGroup.position.set(HIP_X, 0, 0);
-
-  const rightLegMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(LEG_R, LEG_R, LEG_LEN, 6),
-    material
-  );
-  rightLegMesh.position.y = -(LEG_LEN / 2);
-  rightLegMesh.castShadow = true;
-  rightHipGroup.add(rightLegMesh);
-
-  // --- Body group: assembles all parts above the floor ---
-  const body = new THREE.Group();
-  body.add(torsoMesh);
-  body.add(headGroup);
-  body.add(leftShoulderGroup);
-  body.add(rightShoulderGroup);
-  body.add(leftHipGroup);
-  body.add(rightHipGroup);
-
-  // --- Root group ---
-  const group = new THREE.Group();
-  group.add(body);
-
-  // Ground-level fix: body sits at y=LEG_LEN within the root group so that:
-  //   hip joints  → world y = 0.9
-  //   leg centres → world y = 0.9 − 0.45 = 0.45
-  //   feet (bottom of legs) → world y = 0.9 − 0.9 = 0.0  ← floor plane
-  // The root group's position.y stays 0, matching existing waypoints.
-  body.position.y = LEG_LEN;
-
-  Game.enemy.mesh = group;
-
-  // Store named references to every animated Group so updateWalkAnimation()
-  // can reach them in O(1) each frame without traversing the scene graph.
-  Game.enemy.limbRefs = {
-    body,
-    headGroup,
-    leftHip:       leftHipGroup,
-    rightHip:      rightHipGroup,
-    leftShoulder:  leftShoulderGroup,
-    rightShoulder: rightShoulderGroup,
-  };
-
+  // --- Synchronous state (unchanged from procedural version) ---
   Game.enemy.waypoints = [
     new THREE.Vector3(0,  0, -15),
     new THREE.Vector3(3,  0, -15),
@@ -199,15 +80,189 @@ function initEnemy() {
     new THREE.Vector3(-3, 0, -15),
   ];
 
-  group.position.copy(Game.enemy.waypoints[0]);
-  Game.enemy.lastPosition = group.position.clone();
-  Game.scene.add(group);
+  // --- Async FBX load chain ---
+  // Wrapped in try/catch so that a missing or broken FBXLoader script
+  // (404, wrong URL, CDN outage) does not throw an uncaught error here and
+  // silently abort the rest of main.js's boot sequence — without this guard,
+  // a crash in initEnemy() prevents the click-to-start handler and every
+  // subsequent init call from ever running, leaving a completely black screen
+  // with no visible explanation. This catch surfaces the problem clearly while
+  // letting everything else initialise normally.
+  let loader;
+  try {
+    loader = new THREE.FBXLoader();
+  } catch (e) {
+    console.error(
+      '[Enemy] THREE.FBXLoader is not available — check that the FBXLoader ' +
+      'script tag in index.html loaded successfully (open Network tab and ' +
+      'confirm the unpkg URL returned 200, not 404). Enemy will not appear.',
+      e
+    );
+    return; // abort initEnemy() cleanly; Game.enemy.mesh stays null,
+            // and the `if (!enemy.mesh) return` guards in updateEnemy(),
+            // patrolWaypoints(), and huntTowardPlayer() will safely no-op
+            // every frame without further errors.
+  }
+
+  // Step 1: idle.fbx — mesh + skeleton + idle animation
+  loader.load('assets/enemy/idle.fbx', (fbx) => {
+    // --- Scale correction ---
+    // Mixamo exports in centimetres; Three.js uses metres.
+    // 0.01 maps a 170cm character to 1.7m in world space.
+    // One-time bounding-box sanity check: logs actual height so we can
+    // compare against our target ~2.24m (old procedural rig height) and
+    // adjust the scalar if needed without relying on visual guesswork.
+    // 0.013 maps the confirmed 2.048m model to ~2.66m — noticeably imposing
+    // while staying well clear of the 4m corridor ceiling.
+    // (0.01 → 2.048m confirmed via earlier Box3 log; 0.013 = 0.01 * 1.3 → ~2.66m)
+    fbx.scale.setScalar(0.013);
+    const bbox = new THREE.Box3().setFromObject(fbx);
+    console.log(
+      `[Enemy] idle.fbx loaded — bounding box height: ${(bbox.max.y - bbox.min.y).toFixed(3)}m` +
+      ` (target ~2.66m; corridor ceiling is 4m)`
+    );
+
+    // --- Facing-direction note ---
+    // Standard Mixamo FBX exports face +Z (chest toward positive Z).
+    // Math.atan2(dx, dz) in patrolWaypoints/huntTowardPlayer produces 0
+    // when dx=0 and dz>0 (moving toward +Z), so rotation.y=0 → facing +Z.
+    // These match: no correction offset needed.
+    // If the model appears to face BACKWARD during testing, uncomment:
+    //   fbx.rotation.y = Math.PI;
+    // and that one-time offset will persist through all per-frame rotations.
+
+    // --- Shadow ---
+    fbx.traverse((child) => {
+      if (child.isMesh) {
+        child.castShadow    = true;
+        child.receiveShadow = true;
+      }
+    });
+
+    // --- Position at first waypoint ---
+    fbx.position.copy(Game.enemy.waypoints[0]);
+
+    Game.enemy.mesh = fbx;
+    Game.scene.add(fbx);
+
+    // --- Mixer + idle action ---
+    Game.enemy.mixer = new THREE.AnimationMixer(fbx);
+
+    const idleClip   = fbx.animations[0];
+    const idleAction = Game.enemy.mixer.clipAction(idleClip);
+    Game.enemy.animations.idle = idleAction;
+
+    // Start playing idle immediately so the character is never in a
+    // frozen T-pose during the brief window before the first state update.
+    idleAction.play();
+    Game.enemy.currentAnimationName = 'idle';
+
+    console.log('[Enemy] idle animation playing');
+
+    // Step 2: load walk/run/crawl clips — extract animation[0] only,
+    // bound to the SAME mixer (and therefore the same skeleton).
+    // The FBX "with skin" format embeds a full skeleton + mesh in every
+    // file, but AnimationMixer.clipAction() binds the clip to the root
+    // object supplied at mixer construction time, so the duplicate
+    // geometry from these extra files is simply discarded.
+    _loadEnemyClip(loader, 'assets/enemy/walking.fbx', 'walk');
+    _loadEnemyClip(loader, 'assets/enemy/running.fbx',  'run');
+    _loadEnemyClip(loader, 'assets/enemy/crawling.fbx', 'crawl');
+  },
+  // Progress callback — optional, useful during development
+  undefined,
+  (err) => {
+    console.error('[Enemy] Failed to load idle.fbx:', err);
+  });
 }
 
+/**
+ * _loadEnemyClip — loads an FBX file, strips root-motion position tracks,
+ * and registers the first AnimationClip as a named action on Game.enemy.mixer.
+ *
+ * Root-motion stripping:
+ * Mixamo FBX exports without "In Place" bake forward translation into the
+ * skeleton's root/hip bone as a .position keyframe track (typically named
+ * "mixamorigHips.position"). If left in, the AnimationMixer applies that
+ * translation to the root object every frame, conflicting with our manual
+ * position updates in patrolWaypoints() / huntTowardPlayer() and producing
+ * the "walks forward, snaps back to clip-start, repeats" loop.
+ *
+ * The fix: filter clip.tracks to remove any track whose name ends with
+ * ".position" AND whose target bone name contains "hip" or "root"
+ * (case-insensitive). This removes locomotion translation while preserving
+ * all rotation tracks on every bone — the leg/arm/torso joint animation is
+ * entirely rotation-based and is completely unaffected.
+ *
+ * A diagnostic log prints the full track list before stripping so the exact
+ * bone name can be confirmed in the browser console. The log is left in
+ * intentionally; remove it once the fix is confirmed working.
+ *
+ * This is an internal helper, not part of the public API. It is only called
+ * from inside the idle.fbx callback (after the mixer exists).
+ *
+ * @param {THREE.FBXLoader} loader  - shared loader instance
+ * @param {string}          path    - path to the FBX file
+ * @param {string}          name    - key to store under Game.enemy.animations
+ */
+function _loadEnemyClip(loader, path, name) {
+  loader.load(path, (fbx) => {
+    if (!fbx.animations || fbx.animations.length === 0) {
+      console.warn(`[Enemy] ${path} contained no animations — "${name}" will be unavailable`);
+      return;
+    }
+    const clip = fbx.animations[0];
+
+    // --- Diagnostic: log all track names before stripping ---
+    // Check the browser console to confirm the exact root/hip position track
+    // name (expected: something like "mixamorigHips.position"). Once confirmed,
+    // this log can be removed.
+    console.log(
+      `[Enemy] "${name}" tracks:`,
+      clip.tracks.map(t => t.name)
+    );
+
+    // --- Root-motion strip ---
+    // Remove any track that targets the root/hip bone's .position property.
+    // The test is:
+    //   1. track.name ends with ".position"  — this is a translation track
+    //   2. the bone portion of the name (everything before the last dot)
+    //      contains "hip" or "root" (case-insensitive) — this is the
+    //      locomotion bone, not a finger or spine joint
+    //
+    // We deliberately do NOT strip ".position" tracks on other bones (hands,
+    // head, spine) — those are used for IK targets and secondary motion and
+    // must be preserved. Only the root locomotion bone is stripped.
+    const before = clip.tracks.length;
+    clip.tracks = clip.tracks.filter((track) => {
+      if (!track.name.endsWith('.position')) return true; // keep all non-position tracks
+      const boneName = track.name.slice(0, track.name.lastIndexOf('.')).toLowerCase();
+      const isLocomotionBone = boneName.includes('hip') || boneName.includes('root');
+      if (isLocomotionBone) {
+        console.log(`[Enemy] "${name}" — stripped root-motion track: "${track.name}"`);
+      }
+      return !isLocomotionBone; // remove locomotion position tracks, keep everything else
+    });
+    console.log(`[Enemy] "${name}" — ${before} tracks → ${clip.tracks.length} after strip`);
+
+    const action = Game.enemy.mixer.clipAction(clip);
+    Game.enemy.animations[name] = action;
+    console.log(`[Enemy] "${name}" animation ready`);
+  },
+  undefined,
+  (err) => {
+    console.error(`[Enemy] Failed to load ${path}:`, err);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// updateEnemy — called every frame from main.js
 // ---------------------------------------------------------------------------
 
 function updateEnemy(delta) {
   const enemy = Game.enemy;
+  // Async-load guard: mesh is null for up to ~1 second after initEnemy() runs.
+  // All movement and animation code below requires mesh to exist.
   if (!enemy.mesh) return;
 
   if (enemy.state === 'hunt') {
@@ -215,25 +270,16 @@ function updateEnemy(delta) {
   } else {
     // --- Hiding-spot investigation roll ---
     // Only during patrol (never during hunt) and only when there is a known
-    // last-used hiding spot. The roll fires at most once per 60–120s window,
-    // regardless of outcome, so the player can never be pressured by rapid
-    // successive checks. A 35% chance per window means roughly one in three
-    // windows results in a detour — infrequent enough that hiding is still
-    // reliable, but meaningful enough that repeated use of the same spot
-    // creates genuine risk over time.
+    // last-used hiding spot. The roll fires at most once per 60–120s window.
     if (
       Game.hiding &&
       Game.hiding.lastSpotUsed !== null &&
       Game.elapsedTime > enemy.nextSpotCheckTime
     ) {
-      // Advance the window regardless of whether the roll succeeds — this
-      // is the load-bearing decision that keeps checks infrequent. If we only
-      // advanced on a failed roll, a run of successes would produce a burst
-      // of consecutive checks that would feel punishing, not atmospheric.
+      // Advance the window regardless of outcome — keeps checks infrequent.
       enemy.nextSpotCheckTime = Game.elapsedTime + 60 + Math.random() * 60;
 
       if (Math.random() < 0.35) {
-        // 35% chance: begin a detour to the last-used hiding spot.
         enemy.checkingSpot = Game.hiding.lastSpotUsed;
         console.log('[Enemy] detour: investigating last hiding spot');
       }
@@ -242,20 +288,25 @@ function updateEnemy(delta) {
     patrolWaypoints(delta);
   }
 
-  // Animate limbs after movement so the walk cycle reflects this frame's
-  // actual displacement rather than last frame's position.
-  updateWalkAnimation(delta);
+  // Animation update: advance mixer and crossfade to the correct clip.
+  updateEnemyAnimation(delta);
 }
+
+// ---------------------------------------------------------------------------
+// patrolWaypoints — waypoint loop + checkingSpot detour (unchanged logic)
+// ---------------------------------------------------------------------------
 
 function patrolWaypoints(delta) {
   const enemy = Game.enemy;
+  // Async-load guard — matches the guard in updateEnemy().
+  if (!enemy.mesh) return;
   if (enemy.waypoints.length === 0) return;
 
-  // --- Hiding-spot detour branch ---
+  // --- Hiding-spot / distraction detour branch ---
   // When checkingSpot is set, the enemy temporarily ignores its waypoint list
-  // and moves toward the last hiding spot the player used. This reuses the
-  // same movement math as normal waypoint following — identical step/direction
-  // calculation, just with a different target position.
+  // and moves toward the target position. This works identically whether the
+  // spot came from a passive hiding-spot roll (enemy.js) or a thrown
+  // distraction (distraction.js) — both supply a { position: Vector3 } object.
   if (enemy.checkingSpot) {
     const spotPos = enemy.checkingSpot.position;
     const pos     = enemy.mesh.position;
@@ -271,22 +322,11 @@ function patrolWaypoints(delta) {
       enemy.mesh.rotation.y = Math.atan2(dx, dz);
     }
 
-    // When the enemy arrives within ~0.5m, the investigation is complete.
-    // Clear checkingSpot and resume normal patrol from wherever
-    // currentWaypointIndex left off — no reset to index 0 so the patrol loop
-    // doesn't visibly teleport back to its starting point.
     if (dist < 0.5) {
-      // Check for capture BEFORE clearing checkingSpot, since the condition
-      // requires the specific spot reference to match.
-      //
-      // Capture condition: the enemy reached the spot, the player is currently
-      // hiding (Game.hiding.active), AND the player is hiding in THIS specific
-      // spot (object reference equality — not any spot, only the one the enemy
-      // investigated). If all three are true, call triggerCapture() from recap.js.
-      //
-      // Why reference equality? If the player is hiding in spot B while the
-      // enemy investigates spot A, they should be safe — the enemy didn't find
-      // them. Using === on the spot object is the exact right check.
+      // Capture check — reference equality against the actual hiding spot.
+      // A distraction-thrown target is a plain { position } literal, never
+      // the same object reference as a Game.hiding.spots[] element, so this
+      // condition is always false for distraction throws. No capture risk.
       if (
         Game.hiding &&
         Game.hiding.active &&
@@ -320,9 +360,16 @@ function patrolWaypoints(delta) {
   enemy.mesh.rotation.y = Math.atan2(dx, dz);
 }
 
+// ---------------------------------------------------------------------------
+// huntTowardPlayer — direct pursuit (unchanged logic)
+// ---------------------------------------------------------------------------
+
 function huntTowardPlayer(delta) {
   const enemy = Game.enemy;
-  const pos = enemy.mesh.position;
+  // Async-load guard — matches the guard in updateEnemy().
+  if (!enemy.mesh) return;
+
+  const pos    = enemy.mesh.position;
   const target = Game.camera.position;
 
   const dx = target.x - pos.x;
@@ -337,117 +384,109 @@ function huntTowardPlayer(delta) {
   enemy.mesh.rotation.y = Math.atan2(dx, dz);
 }
 
+// ---------------------------------------------------------------------------
+// updateEnemyAnimation — AnimationMixer tick + state-driven crossfades
+// ---------------------------------------------------------------------------
+
 /**
- * updateWalkAnimation — procedural limb animation, called every frame from
- * updateEnemy() after the movement step has already updated position.
+ * Called every frame from updateEnemy(), after the movement step.
  *
- * Three deliberate "wrong" details are baked into the animation:
+ * Always ticks the mixer first (required for any animation to play).
+ * Then selects the target animation name from game state and crossfades
+ * to it if the currently-playing clip differs.
  *
- *   1. LIMP — the left leg swings with a smaller amplitude than the right
- *      (LEFT_LEG_AMP vs RIGHT_LEG_AMP, roughly 30% smaller). The choice of
- *      which leg is weaker is arbitrary but intentional — it's commented as
- *      such rather than implying any narrative reason. A limp implies history
- *      and damage; it reads as more unsettling than either a clean walk or
- *      something obviously mechanical.
+ * Animation priority (checked in order):
+ *   1. crawl — enemy.checkingSpot is set (investigating a hiding spot or
+ *              distraction target). Visual posture signals "searching",
+ *              distinct from both patrol and hunt. Checked first so the
+ *              crawl overrides walk/idle during an investigation regardless
+ *              of enemy.state.
+ *   2. run   — enemy.state === 'hunt'
+ *   3. walk  — enemy is patrolling and is currently moving toward a waypoint
+ *              (dist >= 0.15 threshold, same value used in patrolWaypoints)
+ *   4. idle  — fallback (standing at waypoint, or clip not yet loaded)
  *
- *   2. SAME-SIDE ARM SWING — arms swing in phase with the leg on their own
- *      side, not the opposite side as in normal human gait. Humans counter-
- *      swing (right arm forward when left leg is forward) as a natural
- *      balance mechanism. Breaking that rule is imperceptible at a glance but
- *      registers as "wrong" on close inspection — exactly the kind of detail
- *      that makes a horror enemy unsettling rather than scary.
- *
- *   3. IDLE TREMOR using two incommensurate sine waves — when the enemy is
- *      nearly still, the body and head get a low-amplitude sway driven by
- *      sin(t * 0.7) + sin(t * 1.1). The ratio 0.7/1.1 ≈ 0.636 is irrational,
- *      so the combined wave never perfectly repeats. A looping idle animation
- *      reads as "game idle"; a never-repeating tremor reads as breathing or
- *      barely-contained tension.
- *
- * The idle sway uses Game.elapsedTime as its time source rather than walkPhase
- * because walkPhase is deliberately frozen while idle — using a frozen
- * accumulator for a time-varying sway would produce a fixed, static pose
- * rather than continuous tremor.
+ * Crossfade uses Three.js's standard fadeOut/reset/fadeIn pattern with a
+ * 0.3-second blend window. Actions that haven't loaded yet are skipped
+ * safely — if Game.enemy.animations[target] is undefined (the FBX load
+ * for that clip hasn't resolved yet), we stay on the current action.
  */
-
-// Animation constants — named and grouped here so the "feel" of the walk
-// can be tuned without touching the logic below.
-const LEFT_LEG_AMP   = 0.38; // left leg swing amplitude (radians) — the weaker side
-const RIGHT_LEG_AMP  = 0.55; // right leg swing amplitude — larger, producing the limp
-const ARM_AMP        = 0.30; // arm swing amplitude; subtler than legs
-const IDLE_SPEED_THRESHOLD = 0.05; // m/s — below this the enemy is considered still
-const IDLE_SWAY_AMP  = 0.03; // radians — small enough to be barely perceptible at distance
-
-function updateWalkAnimation(delta) {
+function updateEnemyAnimation(delta) {
   const enemy = Game.enemy;
-  if (!enemy.limbRefs || !enemy.lastPosition) return;
+  // Guard on mesh and mixer only — not on animations.idle specifically,
+  // so mixer.update() always runs once the mixer exists, regardless of
+  // which clips have finished loading.
+  if (!enemy.mesh || !enemy.mixer) return;
 
-  const { body, headGroup, leftHip, rightHip, leftShoulder, rightShoulder } = enemy.limbRefs;
-  const pos = enemy.mesh.position;
+  // Always advance the mixer first. This must happen every frame whether
+  // or not we crossfade — skipping it freezes the skeleton.
+  enemy.mixer.update(delta);
 
-  // Derive current speed from how far the enemy moved this frame.
-  // This naturally produces zero speed at waypoint pauses and smoothly
-  // scales with hunt vs patrol speed without needing separate constants.
-  const dx = pos.x - enemy.lastPosition.x;
-  const dz = pos.z - enemy.lastPosition.z;
-  const stepDistance = Math.hypot(dx, dz);
-  const speed = delta > 0 ? stepDistance / delta : 0;
+  // --- Determine target animation name ---
+  // Priority order: crawl (investigating) → run (hunt) → walk/idle (patrol).
+  let target;
 
-  const isMoving = speed > IDLE_SPEED_THRESHOLD;
-
-  if (isMoving) {
-    // Advance the walk phase proportionally to speed so faster movement
-    // produces faster leg cycling. The multiplier 2.5 is a tuning value:
-    // it maps typical patrol speed (~1.4 m/s) to a phase rate that looks
-    // like a natural stride frequency.
-    enemy.walkPhase += speed * 2.5 * delta;
-
-    const phase = enemy.walkPhase;
-
-    // Legs: opposite phase (standard walk cycle), unequal amplitude (limp).
-    leftHip.rotation.x  =  Math.sin(phase)       * LEFT_LEG_AMP;
-    rightHip.rotation.x =  Math.sin(phase + Math.PI) * RIGHT_LEG_AMP;
-
-    // Arms: SAME phase as the leg on their own side (not the opposite side).
-    // This is the subtle wrongness — see block comment above for rationale.
-    leftShoulder.rotation.x  =  Math.sin(phase)       * ARM_AMP;
-    rightShoulder.rotation.x =  Math.sin(phase + Math.PI) * ARM_AMP;
-
-    // While walking, fade idle sway back toward neutral so it doesn't fight
-    // the walk cycle. lerp at 0.15 per frame is fast enough to feel
-    // responsive but slow enough not to snap.
-    body.rotation.z      += (0 - body.rotation.z)      * 0.15;
-    headGroup.rotation.z += (0 - headGroup.rotation.z) * 0.15;
-
+  if (enemy.checkingSpot) {
+    // Investigating a hiding spot or distraction — crawl posture
+    target = 'crawl';
+  } else if (enemy.state === 'hunt') {
+    target = 'run';
   } else {
-    // --- Idle branch ---
-    // walkPhase is frozen; use Game.elapsedTime so the sway advances
-    // continuously regardless of whether the enemy is moving.
-    const t = Game.elapsedTime;
+    // Patrol: determine moving vs idle using a stillTime debounce.
+    //
+    // The naive approach — select 'idle' whenever dist-to-waypoint < 0.15m —
+    // produces a false idle blip at every waypoint turn: patrolWaypoints()
+    // increments currentWaypointIndex and returns without moving on the arrival
+    // frame, so this code briefly reads the NEW waypoint as its target and may
+    // also find dist < 0.15 for one frame, triggering a walk→idle crossfade
+    // that immediately reverses to walk→walk the next frame. At 60fps a turn
+    // frame is ~16ms — well under the 200ms debounce threshold below.
+    //
+    // stillTime accumulates while the enemy is near-stationary and resets
+    // immediately on any movement. 'idle' is only selected after 200ms of
+    // genuine stillness, filtering out single-frame arrival pauses entirely.
+    const wp = enemy.waypoints[enemy.currentWaypointIndex];
+    const isMoving = wp && (() => {
+      const dx = wp.x - enemy.mesh.position.x;
+      const dz = wp.z - enemy.mesh.position.z;
+      return Math.hypot(dx, dz) >= 0.15;
+    })();
 
-    // Two sine waves with an irrational frequency ratio — the combined
-    // signal never repeats exactly, so it never feels like a looped idle.
-    const sway = Math.sin(t * 0.7) * IDLE_SWAY_AMP
-               + Math.sin(t * 1.1) * IDLE_SWAY_AMP * 0.6;
-
-    // Body sway on the Z axis (side-to-side lean).
-    body.rotation.z = sway;
-
-    // Head gets a small independent secondary sway, slightly out of phase
-    // with the body by adding an offset to t. This breaks the synchrony
-    // between torso and head — a subtle tell that the figure is alive and
-    // wrong, not just a static mesh.
-    headGroup.rotation.z = Math.sin(t * 0.7 + 0.8) * IDLE_SWAY_AMP * 0.5;
-
-    // Blend limbs toward rest so the transition from walk to idle is smooth
-    // rather than snapping to zero. The lerp factor here is gentler (0.08)
-    // than the walk→idle blend above because we want a slow, eerie settle.
-    leftHip.rotation.x       += (0 - leftHip.rotation.x)       * 0.08;
-    rightHip.rotation.x      += (0 - rightHip.rotation.x)      * 0.08;
-    leftShoulder.rotation.x  += (0 - leftShoulder.rotation.x)  * 0.08;
-    rightShoulder.rotation.x += (0 - rightShoulder.rotation.x) * 0.08;
+    if (isMoving) {
+      enemy.stillTime = 0;
+      target = 'walk';
+    } else {
+      enemy.stillTime += delta;
+      // Only commit to 'idle' after 200ms of genuine stillness.
+      // A single skipped frame at a waypoint turn (~16ms) never crosses this.
+      target = enemy.stillTime > 0.2 ? 'idle' : 'walk';
+    }
   }
 
-  // Record position for next frame's velocity calculation.
-  enemy.lastPosition.copy(pos);
+  // CRITICAL early-return: only crossfade when the target actually changed.
+  // Without this guard, fadeOut/reset/fadeIn would fire every single frame
+  // while the state is stable — reset() snaps the clip back to frame 0 each
+  // time, producing the "plays 2-3 frames then stutters back to the start"
+  // symptom. This single check is the entire fix.
+  if (target === enemy.currentAnimationName) return;
+
+  const nextAction = enemy.animations[target];
+  if (!nextAction) {
+    // Clip not yet loaded (async still in flight) — don't update
+    // currentAnimationName so we retry on the next eligible frame.
+    return;
+  }
+
+  const currentAction = enemy.animations[enemy.currentAnimationName];
+  if (currentAction) {
+    currentAction.fadeOut(0.3);
+  }
+
+  // reset() is only safe here because this branch only runs when target
+  // genuinely changed — i.e. nextAction is NOT the already-playing clip.
+  // If nextAction were currently playing and we reset() it, we'd snap to
+  // frame 0 mid-stride. The currentAnimationName guard above ensures that
+  // can't happen: nextAction is always a different (non-current) action here.
+  nextAction.reset().fadeIn(0.3).play();
+  enemy.currentAnimationName = target;
 }
